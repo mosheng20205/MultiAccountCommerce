@@ -1,0 +1,16 @@
+﻿# Visual Studio
+.vs/
+*.suo
+
+# C# build outputs
+Csharp/bin/
+Csharp/obj/
+*.pdb
+
+# Python cache
+Python/__pycache__/
+*.pyc
+
+# OS files
+Thumbs.db
+Desktop.ini
