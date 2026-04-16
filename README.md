@@ -117,6 +117,12 @@ msbuild EmojiWindowEcommerceWorkspaceSketchDemo.csproj /p:Configuration=Debug /p
 
 当前主要是 UI 草图与交互骨架，还没有接入真实浏览器内核、多账号隔离、代理管理、Cookie 同步等业务能力。
 
+当前仓库提供的仍然是纯 UI 版本，并不包含真正的浏览器内核。
+后续有可能继续补充带浏览器内核的版本，建议关注此仓库以获取后续更新。
+
+欢迎加入 QQ 交流群：`523446917`
+如果这个项目对你有帮助，别忘了点个 Star。
+
 ## 依赖说明
 
 本仓库运行依赖核心 DLL：
@@ -136,4 +142,5 @@ msbuild EmojiWindowEcommerceWorkspaceSketchDemo.csproj /p:Configuration=Debug /p
 - 更完整的功能路线图
 
 目前这份 README 已可直接作为仓库首页说明使用。
+
 
