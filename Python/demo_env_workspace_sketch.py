@@ -21,6 +21,7 @@ RDW_ALLCHILDREN = 0x0080
 RDW_FRAME = 0x0400
 RDW_UPDATENOW = 0x0100
 CALLBACK_NODE_SELECTED = 1
+VK_RETURN = 13
 
 USER32 = ctypes.windll.user32
 
@@ -120,6 +121,7 @@ FONT_SEGOE_LEN = len(FONT_SEGOE_RAW)
 
 @dataclass
 class EnvironmentRecord:
+    env_id: int
     node_id: int
     group_name: str
     name: str
@@ -127,6 +129,19 @@ class EnvironmentRecord:
     proxy: str
     status: str
     score: int
+    start_url: str
+    cache_path: str
+    browser_flag: str
+    cookie_path: str
+    host_panel: HWND | None = None
+    address_panel: HWND | None = None
+    address_edit: HWND | None = None
+    browser_view: HWND | None = None
+    browser_state: int = 0
+    keep_alive: bool = False
+    visible: bool = False
+    last_url: str = ""
+    last_title: str = ""
 
 
 class RedrawScope:
@@ -162,6 +177,7 @@ class NativeApi:
         self.ButtonClickCallback = ctypes.WINFUNCTYPE(None, ctypes.c_int, HWND)
         self.WindowResizeCallback = ctypes.WINFUNCTYPE(None, HWND, ctypes.c_int, ctypes.c_int)
         self.TreeViewCallback = ctypes.WINFUNCTYPE(None, ctypes.c_int, ctypes.c_void_p)
+        self.EditBoxKeyCallback = ctypes.WINFUNCTYPE(None, HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)
 
         dll.create_window_bytes_ex.argtypes = [
             ctypes.c_void_p,
@@ -214,6 +230,39 @@ class NativeApi:
         dll.SetLabelText.argtypes = [HWND, ctypes.c_void_p, ctypes.c_int]
         dll.SetLabelBounds.argtypes = [HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
         dll.SetLabelColor.argtypes = [HWND, UINT32, UINT32]
+
+        dll.CreateEditBox.argtypes = [
+            HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            UINT32,
+            UINT32,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        dll.CreateEditBox.restype = HWND
+        dll.GetEditBoxText.argtypes = [HWND, ctypes.c_void_p, ctypes.c_int]
+        dll.GetEditBoxText.restype = ctypes.c_int
+        dll.SetEditBoxText.argtypes = [HWND, ctypes.c_void_p, ctypes.c_int]
+        dll.SetEditBoxKeyCallback.argtypes = [HWND, self.EditBoxKeyCallback]
+        dll.SetEditBoxFont.argtypes = [HWND, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        dll.SetEditBoxColor.argtypes = [HWND, UINT32, UINT32]
+        dll.SetEditBoxBounds.argtypes = [HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        dll.ShowEditBox.argtypes = [HWND, ctypes.c_int]
 
         dll.create_emoji_button_bytes.argtypes = [
             HWND,
@@ -309,15 +358,22 @@ class EnvironmentWorkspaceSketchApp:
         self.height = WINDOW_HEIGHT
 
         self.button_actions: dict[int, callable] = {}
-        self.node_meta: dict[int, dict[str, str]] = {}
+        self.node_meta: dict[int, dict[str, object]] = {}
         self.group_nodes: dict[str, int] = {}
         self.module_nodes: dict[str, int] = {}
-        self.group_env_nodes: dict[str, list[int]] = {}
+        self.group_env_ids: dict[str, list[int]] = {}
         self.environments: dict[int, EnvironmentRecord] = {}
+        self.node_to_env_id: dict[int, int] = {}
+        self.edit_to_env_id: dict[int, int] = {}
         self.current_node_id: int | None = None
-        self.current_env_node: int | None = None
+        self.current_env_id: int | None = None
+        self.current_visible_env_id: int | None = None
         self.toolbar_visible = True
         self.env_counter = 1
+        self.next_env_id = 1001
+        self.max_keep_alive = 3
+        self.browser_canvas_width = 0
+        self.browser_canvas_height = 0
 
         self.window: HWND | None = None
         self.left_panel: HWND | None = None
@@ -334,9 +390,6 @@ class EnvironmentWorkspaceSketchApp:
         self.lbl_left_title: HWND | None = None
         self.lbl_info_main: HWND | None = None
         self.lbl_info_sub: HWND | None = None
-        self.lbl_canvas_title: HWND | None = None
-        self.lbl_canvas_desc: HWND | None = None
-        self.lbl_canvas_hint: HWND | None = None
 
         self.btn_new_env = 0
         self.btn_delete_env = 0
@@ -346,6 +399,7 @@ class EnvironmentWorkspaceSketchApp:
         self._button_click_cb = self.native.ButtonClickCallback(self.on_button_click)
         self._tree_select_cb = self.native.TreeViewCallback(self.on_tree_selected)
         self._window_resize_cb = self.native.WindowResizeCallback(self.on_window_resize)
+        self._edit_key_cb = self.native.EditBoxKeyCallback(self.on_address_key)
 
     def run(self) -> None:
         self.create_window()
@@ -396,21 +450,18 @@ class EnvironmentWorkspaceSketchApp:
         self.lbl_left_title = self.label(self.left_panel, "环境面板", 12, True)
         self.lbl_info_main = self.label(self.info_panel, "", 13, True)
         self.lbl_info_sub = self.label(self.info_panel, "", 11, False)
-        self.lbl_canvas_title = self.label(self.browser_frame, "", 18, True)
-        self.lbl_canvas_desc = self.label(self.browser_frame, "", 11, False)
-        self.lbl_canvas_hint = self.label(self.browser_canvas, "", 18, True)
 
         self.btn_new_env = self.button(self.left_panel, "新建环境", argb(255, 37, 99, 235), self.on_new_environment)
         self.btn_delete_env = self.button(self.left_panel, "删除环境", argb(255, 239, 68, 68), self.on_delete_environment)
         self.btn_theme = self.button(self.left_panel, "🌓", argb(255, 245, 158, 11), self.toggle_theme)
 
         toolbar_specs = [
-            ("启动浏览器", argb(255, 34, 197, 94), self.action_placeholder),
-            ("停止", argb(255, 245, 158, 11), self.action_placeholder),
-            ("刷新", argb(255, 59, 130, 246), self.action_placeholder),
-            ("打开后台", argb(255, 15, 118, 110), self.action_placeholder),
-            ("同步Cookie", argb(255, 124, 58, 237), self.action_placeholder),
-            ("切换代理", argb(255, 8, 145, 178), self.action_placeholder),
+            ("启动浏览器", argb(255, 34, 197, 94), self.on_start_browser),
+            ("停止", argb(255, 245, 158, 11), self.on_stop_browser),
+            ("刷新", argb(255, 59, 130, 246), self.on_refresh_browser),
+            ("打开后台", argb(255, 15, 118, 110), self.on_open_background),
+            ("同步Cookie", argb(255, 124, 58, 237), self.on_sync_cookie),
+            ("切换代理", argb(255, 8, 145, 178), self.on_switch_proxy),
             ("更多操作", argb(255, 100, 116, 139), self.action_placeholder),
         ]
         for text, bg, action in toolbar_specs:
@@ -432,10 +483,10 @@ class EnvironmentWorkspaceSketchApp:
         for group_name, envs in self.GROUP_SEED.items():
             group_id = self.add_child_node(switch_root, group_name, "📁", "group", group_name)
             self.group_nodes[group_name] = group_id
-            self.group_env_nodes[group_name] = []
+            self.group_env_ids[group_name] = []
             for name, domain, proxy, status, score in envs:
-                node_id = self.add_environment(group_id, group_name, name, domain, proxy, status, score)
-                self.group_env_nodes[group_name].append(node_id)
+                env_id = self.add_environment(group_id, group_name, name, domain, proxy, status, score)
+                self.group_env_ids[group_name].append(env_id)
         for module_name, module_icon in self.MODULES.items():
             node_id = self.add_root_node(module_name, module_icon, "module", module_name)
             self.module_nodes[module_name] = node_id
@@ -471,16 +522,35 @@ class EnvironmentWorkspaceSketchApp:
         score: int,
     ) -> int:
         node_id = self.add_child_node(group_node_id, name, "●", "environment", name)
-        self.environments[node_id] = EnvironmentRecord(node_id, group_name, name, domain, proxy, status, score)
+        env_id = self.next_env_id
+        self.next_env_id += 1
+        record = EnvironmentRecord(
+            env_id=env_id,
+            node_id=node_id,
+            group_name=group_name,
+            name=name,
+            domain=domain,
+            proxy=proxy,
+            status=status,
+            score=score,
+            start_url=self.default_start_url(domain),
+            cache_path=str(Path(__file__).resolve().parent / "cache" / f"env_{env_id}"),
+            browser_flag=f"env_{env_id}",
+            cookie_path=str(Path(__file__).resolve().parent / "cookies" / f"env_{env_id}.json"),
+        )
+        self.environments[env_id] = record
+        self.node_to_env_id[node_id] = env_id
+        self.node_meta[node_id]["env_id"] = env_id
         self.apply_environment_node_color(node_id, status)
-        return node_id
+        return env_id
 
     def select_default_environment(self) -> None:
         if not self.environments:
             return
-        first_node_id = next(iter(self.environments))
-        self.dll.SetSelectedNode(self.tree, first_node_id)
-        self.activate_node(first_node_id)
+        first_env_id = next(iter(self.environments))
+        first_env = self.environments[first_env_id]
+        self.dll.SetSelectedNode(self.tree, first_env.node_id)
+        self.activate_node(first_env.node_id)
 
     def on_button_click(self, button_id: int, parent: HWND) -> None:
         action = self.button_actions.get(button_id)
@@ -500,6 +570,21 @@ class EnvironmentWorkspaceSketchApp:
         with RedrawScope(self.window):
             self.layout()
 
+    def on_address_key(self, h_edit: HWND, key_code: int, key_down: int, shift: int, ctrl: int, alt: int) -> None:
+        if key_down != 1 or key_code != VK_RETURN:
+            return
+        edit_handle = int(ctypes.cast(h_edit, ctypes.c_void_p).value or 0)
+        env_id = self.edit_to_env_id.get(edit_handle)
+        if env_id is None:
+            return
+        env = self.environments.get(env_id)
+        if env is None:
+            return
+        url = self.get_edit_text(h_edit).strip()
+        if not url:
+            return
+        self.navigate_environment(env, url)
+
     def activate_node(self, node_id: int) -> None:
         meta = self.node_meta.get(node_id)
         if not meta:
@@ -507,19 +592,22 @@ class EnvironmentWorkspaceSketchApp:
         self.current_node_id = node_id
         kind = meta["kind"]
         if kind == "environment":
-            self.current_env_node = node_id
             self.toolbar_visible = True
-            self.render_environment(self.environments[node_id])
+            self.switch_to_environment(int(meta["env_id"]))
             return
+        self.current_env_id = None
         if kind == "group":
             self.toolbar_visible = False
+            self.hide_visible_environment()
             self.render_group(meta["key"])
             return
         if kind == "module":
             self.toolbar_visible = False
+            self.hide_visible_environment()
             self.render_module(meta["key"])
             return
         self.toolbar_visible = False
+        self.hide_visible_environment()
         self.render_switch_root()
 
     def render_environment(self, env: EnvironmentRecord) -> None:
@@ -527,34 +615,24 @@ class EnvironmentWorkspaceSketchApp:
         info_sub = f"域名：{env.domain}   代理：{env.proxy}"
         self.set_label_text(self.lbl_info_main, info_main)
         self.set_label_text(self.lbl_info_sub, info_sub)
-        self.set_label_text(self.lbl_canvas_title, "浏览器主工作区")
-        self.set_label_text(self.lbl_canvas_desc, f"当前环境 {env.name} 的浏览器区域占位壳子")
-        self.set_label_text(self.lbl_canvas_hint, env.name)
+        if env.address_edit:
+            self.set_edit_text(env.address_edit, self.environment_url_text(env))
         self.set_window_title(f"电商多账号浏览器 - {env.name}")
 
     def render_group(self, group_name: str) -> None:
-        count = len(self.group_env_nodes.get(group_name, []))
+        count = len(self.group_env_ids.get(group_name, []))
         self.set_label_text(self.lbl_info_main, f"当前分组：{group_name}")
         self.set_label_text(self.lbl_info_sub, f"该分组下共有 {count} 个环境，点击环境节点可快速切换")
-        self.set_label_text(self.lbl_canvas_title, f"{group_name} 工作区")
-        self.set_label_text(self.lbl_canvas_desc, "这里可以继续扩展为分组总览、批量操作或分组统计页面")
-        self.set_label_text(self.lbl_canvas_hint, group_name)
         self.set_window_title(f"电商多账号浏览器 - {group_name}")
 
     def render_module(self, module_name: str) -> None:
         self.set_label_text(self.lbl_info_main, f"当前模块：{module_name}")
         self.set_label_text(self.lbl_info_sub, "该区域先保留为模块工作区占位，后续可替换为真实业务页面")
-        self.set_label_text(self.lbl_canvas_title, f"{module_name} 工作区")
-        self.set_label_text(self.lbl_canvas_desc, "右侧区域已按草图保留为最大化内容区")
-        self.set_label_text(self.lbl_canvas_hint, module_name)
         self.set_window_title(f"电商多账号浏览器 - {module_name}")
 
     def render_switch_root(self) -> None:
         self.set_label_text(self.lbl_info_main, "环境切换")
         self.set_label_text(self.lbl_info_sub, "左侧展开分组并点击环境节点，即可快速切换右侧工作区")
-        self.set_label_text(self.lbl_canvas_title, "浏览器主工作区")
-        self.set_label_text(self.lbl_canvas_desc, "当前未选中具体环境")
-        self.set_label_text(self.lbl_canvas_hint, "请选择一个环境")
         self.set_window_title("电商多账号浏览器 - 草图版")
 
     def on_new_environment(self) -> None:
@@ -562,30 +640,34 @@ class EnvironmentWorkspaceSketchApp:
         name = f"{group_name.split()[0]}-环境{self.env_counter:02d}"
         domain = "new-env.local"
         proxy = f"Proxy-{self.env_counter:02d}"
-        node_id = self.add_environment(group_node_id, group_name, name, domain, proxy, "待启动", 80)
-        self.group_env_nodes.setdefault(group_name, []).append(node_id)
+        env_id = self.add_environment(group_node_id, group_name, name, domain, proxy, "待启动", 80)
+        self.group_env_ids.setdefault(group_name, []).append(env_id)
         self.env_counter += 1
         self.dll.ExpandNode(self.tree, group_node_id)
+        node_id = self.environments[env_id].node_id
         self.dll.SetSelectedNode(self.tree, node_id)
         self.activate_node(node_id)
 
     def on_delete_environment(self) -> None:
-        node_id = self.current_node_id
-        if node_id not in self.environments:
+        if self.current_env_id is None:
             self.set_label_text(self.lbl_info_sub, "请先在左侧树形框中选中一个环境节点，再执行删除。")
             return
-        env = self.environments.pop(node_id)
-        self.group_env_nodes[env.group_name] = [item for item in self.group_env_nodes.get(env.group_name, []) if item != node_id]
-        self.node_meta.pop(node_id, None)
-        self.dll.RemoveNode(self.tree, node_id)
-        fallback = self.group_env_nodes.get(env.group_name, [])
-        next_node = fallback[0] if fallback else next(iter(self.environments), None)
-        if next_node is not None:
-            self.dll.SetSelectedNode(self.tree, next_node)
-            self.activate_node(next_node)
+        env = self.environments.pop(self.current_env_id)
+        self.destroy_environment_host(env)
+        self.group_env_ids[env.group_name] = [item for item in self.group_env_ids.get(env.group_name, []) if item != env.env_id]
+        self.node_to_env_id.pop(env.node_id, None)
+        self.node_meta.pop(env.node_id, None)
+        self.dll.RemoveNode(self.tree, env.node_id)
+        fallback = self.group_env_ids.get(env.group_name, [])
+        next_env_id = fallback[0] if fallback else next(iter(self.environments), None)
+        if next_env_id is not None:
+            next_env = self.environments[next_env_id]
+            self.dll.SetSelectedNode(self.tree, next_env.node_id)
+            self.activate_node(next_env.node_id)
         else:
             self.current_node_id = None
-            self.current_env_node = None
+            self.current_env_id = None
+            self.current_visible_env_id = None
             self.render_switch_root()
 
     def resolve_target_group(self) -> tuple[str, int]:
@@ -595,17 +677,79 @@ class EnvironmentWorkspaceSketchApp:
                 group_name = meta["key"]
                 return group_name, self.current_node_id
             if meta.get("kind") == "environment":
-                env = self.environments[self.current_node_id]
+                env = self.environments[int(meta["env_id"])]
                 return env.group_name, self.group_nodes[env.group_name]
         default_group = next(iter(self.group_nodes))
         return default_group, self.group_nodes[default_group]
 
     def action_placeholder(self) -> None:
-        if self.current_env_node is None:
-            self.set_label_text(self.lbl_canvas_desc, "当前不是环境页面，工具栏操作未执行。")
+        if self.current_env_id is None:
+            self.set_label_text(self.lbl_info_sub, "当前不是环境页面，工具栏操作未执行。")
             return
-        env = self.environments[self.current_env_node]
-        self.set_label_text(self.lbl_canvas_desc, f"已触发 {env.name} 的草图操作，占位逻辑生效。")
+        env = self.environments[self.current_env_id]
+        self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   操作：已触发占位逻辑")
+
+    def on_start_browser(self) -> None:
+        env = self.current_environment()
+        if env is None:
+            self.set_label_text(self.lbl_info_sub, "当前不是环境页面，无法启动浏览器。")
+            return
+        self.ensure_environment_host(env)
+        env.browser_state = 2
+        env.status = "运行中"
+        env.keep_alive = False
+        env.last_url = env.start_url
+        env.last_title = env.name
+        self.apply_environment_node_color(env.node_id, env.status)
+        self.render_environment(env)
+
+    def on_stop_browser(self) -> None:
+        env = self.current_environment()
+        if env is None:
+            self.set_label_text(self.lbl_info_sub, "当前不是环境页面，无法停止浏览器。")
+            return
+        self.close_environment_browser(env)
+        self.render_environment(env)
+
+    def on_refresh_browser(self) -> None:
+        env = self.current_environment()
+        if env is None:
+            self.set_label_text(self.lbl_info_sub, "当前不是环境页面，工具栏操作未执行。")
+            return
+        if env.browser_state not in {2, 3}:
+            self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   状态：浏览器尚未启动")
+            return
+        env.last_url = env.start_url
+        if env.address_edit:
+            self.set_edit_text(env.address_edit, self.environment_url_text(env))
+        self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   状态：已刷新独立工作区")
+
+    def on_open_background(self) -> None:
+        env = self.current_environment()
+        if env is None:
+            self.set_label_text(self.lbl_info_sub, "当前不是环境页面，无法设置后台保活。")
+            return
+        env.keep_alive = True
+        if env.browser_state == 2:
+            env.status = "后台中"
+        self.apply_environment_node_color(env.node_id, env.status)
+        self.render_environment(env)
+        self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   状态：已设置后台保活")
+
+    def on_sync_cookie(self) -> None:
+        env = self.current_environment()
+        if env is None:
+            self.set_label_text(self.lbl_info_sub, "当前不是环境页面，无法同步 Cookie。")
+            return
+        self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   Cookie：{env.cookie_path}")
+
+    def on_switch_proxy(self) -> None:
+        env = self.current_environment()
+        if env is None:
+            self.set_label_text(self.lbl_info_sub, "当前不是环境页面，无法切换代理。")
+            return
+        env.proxy = f"{env.proxy}-ALT"
+        self.render_environment(env)
 
     def toggle_theme(self) -> None:
         dark = not bool(self.dll.IsDarkMode())
@@ -647,11 +791,19 @@ class EnvironmentWorkspaceSketchApp:
             (self.lbl_left_title, text, left_bg),
             (self.lbl_info_main, text, panel_bg),
             (self.lbl_info_sub, muted, panel_bg),
-            (self.lbl_canvas_title, text, panel_bg),
-            (self.lbl_canvas_desc, muted, panel_bg),
-            (self.lbl_canvas_hint, accent, canvas_bg),
         ):
             self.dll.SetLabelColor(label, fg, surface)
+
+        for env in self.environments.values():
+            if env.host_panel:
+                self.dll.SetPanelBackgroundColor(env.host_panel, canvas_bg)
+            if env.address_panel:
+                self.dll.SetPanelBackgroundColor(env.address_panel, panel_bg)
+            if env.browser_view:
+                self.dll.SetPanelBackgroundColor(env.browser_view, canvas_bg)
+            if env.address_edit:
+                self.dll.SetEditBoxColor(env.address_edit, text, argb(255, 255, 255, 255) if not dark else argb(255, 26, 30, 36))
+                self.dll.SetEditBoxFont(env.address_edit, FONT_SEGOE_PTR, FONT_SEGOE_LEN, 12, 0, 0, 0)
 
         self.paint_button(self.btn_new_env, argb(255, 37, 99, 235))
         self.paint_button(self.btn_delete_env, argb(255, 239, 68, 68))
@@ -678,8 +830,8 @@ class EnvironmentWorkspaceSketchApp:
         self.dll.SetTreeViewSelectedForeColor(self.tree, argb(255, 255, 255, 255))
         self.dll.SetTreeViewHoverBgColor(self.tree, mix_color(accent, left_bg, 0.88) if not dark else shift_color(left_bg, 8))
 
-        for node_id, env in self.environments.items():
-            self.apply_environment_node_color(node_id, env.status)
+        for env in self.environments.values():
+            self.apply_environment_node_color(env.node_id, env.status)
         for node_id, meta in self.node_meta.items():
             if meta["kind"] in {"switch_root", "group", "module"}:
                 self.dll.SetNodeForeColor(self.tree, node_id, text)
@@ -689,6 +841,7 @@ class EnvironmentWorkspaceSketchApp:
             "运行中": argb(255, 34, 197, 94),
             "空闲中": argb(255, 100, 116, 139),
             "待启动": argb(255, 245, 158, 11),
+            "后台中": argb(255, 59, 130, 246),
             "异常": argb(255, 239, 68, 68),
         }
         self.dll.SetNodeForeColor(self.tree, node_id, status_colors.get(status, argb(255, 31, 41, 55)))
@@ -741,23 +894,156 @@ class EnvironmentWorkspaceSketchApp:
         browser_h = max(240, right_h - browser_y)
         self.move(self.browser_panel, 0, browser_y, right_w, browser_h)
         self.move(self.browser_frame, 0, 0, right_w, browser_h)
-        self.move(self.browser_canvas, 16, 74, max(240, right_w - 32), max(160, browser_h - 90))
-        self.dll.SetLabelBounds(self.lbl_canvas_title, 18, 18, right_w - 36, 24)
-        self.dll.SetLabelBounds(self.lbl_canvas_desc, 18, 44, right_w - 36, 18)
+        self.move(self.browser_canvas, 16, 16, max(240, right_w - 32), max(160, browser_h - 32))
 
         canvas_w = max(240, right_w - 32)
-        canvas_h = max(160, browser_h - 90)
-        hint_w = min(420, canvas_w - 40)
-        hint_h = 30
-        hint_x = max(20, (canvas_w - hint_w) // 2)
-        hint_y = max(20, (canvas_h - hint_h) // 2 - 20)
-        self.dll.SetLabelBounds(self.lbl_canvas_hint, hint_x, hint_y, hint_w, hint_h)
+        canvas_h = max(160, browser_h - 32)
+        self.browser_canvas_width = canvas_w
+        self.browser_canvas_height = canvas_h
+        for env in self.environments.values():
+            self.layout_environment_host(env)
 
         if self.toolbar_visible:
             self.layout_toolbar_buttons(right_x, top_y + toolbar_y)
         else:
             for button_id in self.toolbar_buttons:
                 self.show_button(button_id, False)
+
+    def default_start_url(self, domain: str) -> str:
+        return f"https://{domain}"
+
+    def current_environment(self) -> EnvironmentRecord | None:
+        if self.current_env_id is None:
+            return None
+        return self.environments.get(self.current_env_id)
+
+    def switch_to_environment(self, env_id: int) -> None:
+        env = self.environments[env_id]
+        self.current_env_id = env_id
+        if self.current_visible_env_id != env_id:
+            self.hide_visible_environment()
+            self.ensure_environment_host(env)
+            self.show_environment(env)
+            self.current_visible_env_id = env_id
+        self.render_environment(env)
+
+    def hide_visible_environment(self) -> None:
+        if self.current_visible_env_id is None:
+            return
+        env = self.environments.get(self.current_visible_env_id)
+        if env and env.host_panel:
+            self.show_panel(env.host_panel, False)
+            env.visible = False
+            if env.browser_state == 2 and env.keep_alive:
+                env.browser_state = 3
+                env.status = "后台中"
+                self.apply_environment_node_color(env.node_id, env.status)
+        self.current_visible_env_id = None
+
+    def ensure_environment_host(self, env: EnvironmentRecord) -> None:
+        if env.host_panel:
+            return
+        dark = bool(self.dll.IsDarkMode())
+        canvas_bg = argb(255, 249, 251, 253) if not dark else argb(255, 12, 15, 20)
+        panel_bg = argb(255, 255, 255, 255) if not dark else argb(255, 33, 38, 46)
+        text = argb(255, 31, 41, 55) if not dark else argb(255, 241, 245, 249)
+        env.host_panel = self.dll.CreatePanel(self.browser_canvas, 0, 0, 100, 100, canvas_bg)
+        env.address_panel = self.dll.CreatePanel(env.host_panel, 0, 0, 100, 44, panel_bg)
+        env.address_edit = self.editbox(env.address_panel, self.environment_url_text(env), readonly=False)
+        env.browser_view = self.dll.CreatePanel(env.host_panel, 0, 0, 100, 100, canvas_bg)
+        self.dll.SetEditBoxColor(env.address_edit, text, argb(255, 255, 255, 255) if not dark else argb(255, 26, 30, 36))
+        self.dll.SetEditBoxFont(env.address_edit, FONT_SEGOE_PTR, FONT_SEGOE_LEN, 12, 0, 0, 0)
+        self.dll.SetEditBoxKeyCallback(env.address_edit, self._edit_key_cb)
+        self.edit_to_env_id[int(ctypes.cast(env.address_edit, ctypes.c_void_p).value or 0)] = env.env_id
+        self.layout_environment_host(env)
+        self.show_panel(env.host_panel, False)
+
+    def show_environment(self, env: EnvironmentRecord) -> None:
+        self.ensure_environment_host(env)
+        self.show_panel(env.host_panel, True)
+        env.visible = True
+        if env.browser_state == 3:
+            env.browser_state = 2
+            env.status = "运行中"
+            self.apply_environment_node_color(env.node_id, env.status)
+
+    def close_environment_browser(self, env: EnvironmentRecord) -> None:
+        env.browser_state = 5
+        env.keep_alive = False
+        env.status = "待启动"
+        env.visible = False
+        self.apply_environment_node_color(env.node_id, env.status)
+        if env.host_panel:
+            self.show_panel(env.host_panel, False)
+        if self.current_visible_env_id == env.env_id:
+            self.current_visible_env_id = None
+
+    def destroy_environment_host(self, env: EnvironmentRecord) -> None:
+        if env.address_edit:
+            self.edit_to_env_id.pop(int(ctypes.cast(env.address_edit, ctypes.c_void_p).value or 0), None)
+        if env.host_panel:
+            USER32.DestroyWindow(int(ctypes.cast(env.host_panel, ctypes.c_void_p).value or 0))
+        env.host_panel = None
+        env.address_panel = None
+        env.address_edit = None
+        env.browser_view = None
+        if self.current_visible_env_id == env.env_id:
+            self.current_visible_env_id = None
+
+    def layout_environment_host(self, env: EnvironmentRecord) -> None:
+        canvas_w = self.browser_canvas_width
+        canvas_h = self.browser_canvas_height
+        if canvas_w <= 0 or canvas_h <= 0:
+            return
+        if env.host_panel:
+            self.move(env.host_panel, 0, 0, canvas_w, canvas_h)
+        if env.address_panel:
+            self.move(env.address_panel, 16, 16, max(220, canvas_w - 32), 44)
+        if env.address_edit:
+            self.dll.SetEditBoxBounds(env.address_edit, 14, 8, max(180, canvas_w - 60), 28)
+        if env.browser_view:
+            self.move(env.browser_view, 16, 68, max(220, canvas_w - 32), max(120, canvas_h - 84))
+
+    def browser_state_text(self, env: EnvironmentRecord) -> str:
+        states = {
+            0: "未创建",
+            1: "创建中",
+            2: "运行中",
+            3: "隐藏保活",
+            4: "关闭中",
+            5: "已关闭",
+            6: "异常",
+        }
+        return states.get(env.browser_state, "未知")
+
+    def environment_url_text(self, env: EnvironmentRecord) -> str:
+        return env.last_url or env.start_url
+
+    def normalize_url(self, url: str) -> str:
+        value = url.strip()
+        if not value:
+            return ""
+        if "://" not in value:
+            value = f"https://{value}"
+        return value
+
+    def navigate_environment(self, env: EnvironmentRecord, url: str) -> None:
+        normalized = self.normalize_url(url)
+        if not normalized:
+            return
+        self.ensure_environment_host(env)
+        env.last_url = normalized
+        env.last_title = normalized
+        if env.browser_state in {0, 5, 6}:
+            env.browser_state = 2
+            env.status = "运行中"
+            self.apply_environment_node_color(env.node_id, env.status)
+        if env.address_edit:
+            self.set_edit_text(env.address_edit, normalized)
+        if self.current_env_id == env.env_id:
+            self.render_environment(env)
+            self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   当前网址：{normalized}")
+
 
     def layout_toolbar_buttons(self, origin_x: int, origin_y: int) -> None:
         x = 16
@@ -793,6 +1079,34 @@ class EnvironmentWorkspaceSketchApp:
             0,
         )
 
+    def editbox(self, parent: HWND, text: str, readonly: bool) -> HWND:
+        text_ptr, text_len, text_keep = utf8_buffer(text)
+        self._edit_keep = getattr(self, "_edit_keep", [])
+        self._edit_keep.append(text_keep)
+        return self.dll.CreateEditBox(
+            parent,
+            0,
+            0,
+            100,
+            28,
+            text_ptr,
+            text_len,
+            argb(255, 31, 41, 55),
+            argb(255, 255, 255, 255),
+            FONT_SEGOE_PTR,
+            FONT_SEGOE_LEN,
+            12,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1 if readonly else 0,
+            0,
+            1,
+            1,
+        )
+
     def button(self, parent: HWND, text: str, bg: int, action=None) -> int:
         emoji_ptr, emoji_len, emoji_keep = utf8_buffer("")
         text_ptr, text_len, text_keep = utf8_buffer(text)
@@ -826,6 +1140,20 @@ class EnvironmentWorkspaceSketchApp:
         self._set_label_keep = getattr(self, "_set_label_keep", [])
         self._set_label_keep.append(keep)
         self.dll.SetLabelText(hwnd, ptr, ln)
+
+    def set_edit_text(self, hwnd: HWND, text: str) -> None:
+        ptr, ln, keep = utf8_buffer(text)
+        self._set_edit_keep = getattr(self, "_set_edit_keep", [])
+        self._set_edit_keep.append(keep)
+        self.dll.SetEditBoxText(hwnd, ptr, ln)
+
+    def get_edit_text(self, hwnd: HWND) -> str:
+        text_len = self.dll.GetEditBoxText(hwnd, ctypes.c_void_p(), 0)
+        if text_len <= 0:
+            return ""
+        buf = (ctypes.c_ubyte * text_len)()
+        self.dll.GetEditBoxText(hwnd, ctypes.cast(buf, ctypes.c_void_p), text_len)
+        return bytes(buf).decode("utf-8", errors="ignore").rstrip("\x00")
 
     def set_window_title(self, title: str) -> None:
         ptr, ln, keep = utf8_buffer(title)
