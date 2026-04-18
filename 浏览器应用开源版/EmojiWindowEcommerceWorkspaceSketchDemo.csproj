@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="packages\FBroSharp.Common.5.31.32\build\FBroSharp.Common.props" Condition="Exists('packages\FBroSharp.Common.5.31.32\build\FBroSharp.Common.props')" />
+  <Import Project="packages\FBroSharp.x64.5.31.32\build\FBroSharp.x64.props" Condition="Exists('packages\FBroSharp.x64.5.31.32\build\FBroSharp.x64.props')" />
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <Prefer32Bit>false</Prefer32Bit>
+    <RootNamespace>EmojiWindowEcommerceWorkspaceSketchDemo</RootNamespace>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="obj\**\*.cs" />
+    <Compile Remove="bin\**\*.cs" />
+    <Reference Include="FBroSharpInterface">
+      <HintPath>packages\FBroSharp.Common.5.31.32\lib\FBroSharpInterface.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="FBroSharpLib">
+      <HintPath>packages\FBroSharp.Common.5.31.32\lib\x64\FBroSharpLib.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <None Include="favicon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="emoji_window.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>缺少 FBroSharp 运行包文件: {0}</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('packages\FBroSharp.Common.5.31.32\build\FBroSharp.Common.props')" Text="$([System.String]::Format('$(ErrorText)', 'packages\FBroSharp.Common.5.31.32\build\FBroSharp.Common.props'))" />
+    <Error Condition="!Exists('packages\FBroSharp.x64.5.31.32\build\FBroSharp.x64.props')" Text="$([System.String]::Format('$(ErrorText)', 'packages\FBroSharp.x64.5.31.32\build\FBroSharp.x64.props'))" />
+    <Error Condition="!Exists('packages\FBroSharp.Common.5.31.32\build\FBroSharp.Common.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\FBroSharp.Common.5.31.32\build\FBroSharp.Common.targets'))" />
+  </Target>
+
+  <Import Project="packages\FBroSharp.Common.5.31.32\build\FBroSharp.Common.targets" Condition="Exists('packages\FBroSharp.Common.5.31.32\build\FBroSharp.Common.targets')" />
+</Project>

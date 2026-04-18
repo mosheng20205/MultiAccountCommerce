@@ -5,11 +5,24 @@
 # C# build outputs
 Csharp/bin/
 Csharp/obj/
+浏览器应用开源版/.vs/
+浏览器应用开源版/bin/
+浏览器应用开源版/obj/
+浏览器应用开源版/packages/
+浏览器应用开源版/emoji_window.dll
+浏览器应用开源版/EmojiWindowEcommerceWorkspaceSketchDemo.exe
+浏览器应用开源版/EmojiWindowEcommerceWorkspaceSketchDemo.exe.config
 *.pdb
 
 # Python cache
 Python/__pycache__/
 *.pyc
+Python/cache/*
+!Python/cache/.gitkeep
+Python/cookies/*
+!Python/cookies/.gitkeep
+Python/logs/*
+!Python/logs/.gitkeep
 
 # OS files
 Thumbs.db
