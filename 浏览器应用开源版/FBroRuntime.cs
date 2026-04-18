@@ -69,6 +69,8 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         {
             commandLine.DisableGpuBlockList();
             commandLine.DisableGpuCache();
+            commandLine.AppendSwitch("-disable-chrome-login-prompt"); // ∆¡±ŒµØ≥ˆ’À∫≈√‹¬Î…Ë÷√Ã· æ
+            commandLine.AppendSwitchWithValue("--disable-features", "Translate,TranslateUI"); //∆¡±Œ∑≠“ÎµØ¥∞
         }
     }
 }

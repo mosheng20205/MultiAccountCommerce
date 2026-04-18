@@ -36,12 +36,17 @@ namespace EmojiWindowDemo
                 return string.Empty;
             }
 
-            IntPtr buffer = Marshal.AllocHGlobal(size);
+            IntPtr buffer = Marshal.AllocHGlobal(size + 1);
             try
             {
-                reader(handle, buffer, size);
-                byte[] bytes = new byte[size];
-                Marshal.Copy(buffer, bytes, 0, size);
+                int copied = reader(handle, buffer, size + 1);
+                if (copied <= 0)
+                {
+                    return string.Empty;
+                }
+
+                byte[] bytes = new byte[copied];
+                Marshal.Copy(buffer, bytes, 0, copied);
                 return FromUtf8(bytes);
             }
             finally
@@ -58,12 +63,17 @@ namespace EmojiWindowDemo
                 return string.Empty;
             }
 
-            IntPtr buffer = Marshal.AllocHGlobal(size);
+            IntPtr buffer = Marshal.AllocHGlobal(size + 1);
             try
             {
-                reader(handle, index, buffer, size);
-                byte[] bytes = new byte[size];
-                Marshal.Copy(buffer, bytes, 0, size);
+                int copied = reader(handle, index, buffer, size + 1);
+                if (copied <= 0)
+                {
+                    return string.Empty;
+                }
+
+                byte[] bytes = new byte[copied];
+                Marshal.Copy(buffer, bytes, 0, copied);
                 return FromUtf8(bytes);
             }
             finally
@@ -80,12 +90,17 @@ namespace EmojiWindowDemo
                 return string.Empty;
             }
 
-            IntPtr buffer = Marshal.AllocHGlobal(size);
+            IntPtr buffer = Marshal.AllocHGlobal(size + 1);
             try
             {
-                reader(id, buffer, size);
-                byte[] bytes = new byte[size];
-                Marshal.Copy(buffer, bytes, 0, size);
+                int copied = reader(id, buffer, size + 1);
+                if (copied <= 0)
+                {
+                    return string.Empty;
+                }
+
+                byte[] bytes = new byte[copied];
+                Marshal.Copy(buffer, bytes, 0, copied);
                 return FromUtf8(bytes);
             }
             finally
@@ -102,12 +117,17 @@ namespace EmojiWindowDemo
                 return string.Empty;
             }
 
-            IntPtr buffer = Marshal.AllocHGlobal(size);
+            IntPtr buffer = Marshal.AllocHGlobal(size + 1);
             try
             {
-                reader(handle, row, col, buffer, size);
-                byte[] bytes = new byte[size];
-                Marshal.Copy(buffer, bytes, 0, size);
+                int copied = reader(handle, row, col, buffer, size + 1);
+                if (copied <= 0)
+                {
+                    return string.Empty;
+                }
+
+                byte[] bytes = new byte[copied];
+                Marshal.Copy(buffer, bytes, 0, copied);
                 return FromUtf8(bytes);
             }
             finally

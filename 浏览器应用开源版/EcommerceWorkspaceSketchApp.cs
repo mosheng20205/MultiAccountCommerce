@@ -1,8 +1,8 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 using EmojiWindowDemo;
 using FBroSharp;
 using FBroSharp.DataType;
@@ -11,7 +11,7 @@ using FBroSharp.Value;
 
 namespace EmojiWindowEcommerceWorkspaceSketchDemo
 {
-    internal sealed class EcommerceWorkspaceSketchApp
+    internal sealed partial class EcommerceWorkspaceSketchApp
     {
         private sealed class EnvironmentRecord
         {
@@ -44,6 +44,29 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             public string Kind { get; set; } = string.Empty;
             public string Key { get; set; } = string.Empty;
             public int? EnvId { get; set; }
+        }
+
+        private sealed class GroupEditorState
+        {
+            public string Name { get; set; } = string.Empty;
+            public string DefaultStartUrl { get; set; } = string.Empty;
+        }
+
+        [DataContract]
+        private sealed class PersistedGroupEntry
+        {
+            [DataMember(Order = 1)]
+            public string Name { get; set; } = string.Empty;
+
+            [DataMember(Order = 2)]
+            public string DefaultStartUrl { get; set; } = string.Empty;
+        }
+
+        [DataContract]
+        private sealed class PersistedGroupConfig
+        {
+            [DataMember(Order = 1)]
+            public List<PersistedGroupEntry> Groups { get; set; } = new List<PersistedGroupEntry>();
         }
 
         private static class NativeExtras
@@ -155,6 +178,8 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private readonly Dictionary<int, NodeMeta> _nodeMeta = new Dictionary<int, NodeMeta>();
         private readonly Dictionary<string, int> _groupNodes = new Dictionary<string, int>();
         private readonly Dictionary<string, List<int>> _groupEnvironmentIds = new Dictionary<string, List<int>>();
+        private readonly Dictionary<string, string> _groupDefaultUrls = new Dictionary<string, string>();
+        private readonly List<string> _groupOrder = new List<string>();
         private readonly Dictionary<string, int> _moduleNodes = new Dictionary<string, int>();
         private readonly Dictionary<int, EnvironmentRecord> _environments = new Dictionary<int, EnvironmentRecord>();
         private readonly Dictionary<int, int> _nodeToEnvId = new Dictionary<int, int>();
@@ -204,6 +229,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private readonly EmojiWindowNative.TreeNodeCallback _treeNodeCallback;
         private readonly EmojiWindowNative.WindowResizeCallback _windowResizeCallback;
         private readonly EmojiWindowNative.EditBoxKeyCallback _editKeyCallback;
+        private readonly EmojiWindowNative.ListBoxCallback _groupListCallback;
 
         private IntPtr _window;
         private IntPtr _leftPanel;
@@ -219,10 +245,23 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private IntPtr _lblLeftTitle;
         private IntPtr _lblInfoMain;
         private IntPtr _lblInfoSub;
+        private IntPtr _groupManagementPanel;
+        private IntPtr _groupListBox;
+        private IntPtr _lblGroupListTitle;
+        private IntPtr _lblGroupEditorTitle;
+        private IntPtr _lblGroupNameCaption;
+        private IntPtr _lblGroupUrlCaption;
+        private IntPtr _lblGroupStats;
+        private IntPtr _lblGroupHint;
+        private IntPtr _editGroupName;
+        private IntPtr _editGroupUrl;
 
         private int _btnNewEnv;
         private int _btnDeleteEnv;
         private int _btnTheme;
+        private int _btnGroupSave;
+        private int _btnGroupAdd;
+        private int _btnGroupDelete;
         private int _width = WindowWidth;
         private int _height = WindowHeight;
         private uint _dpi = 96;
@@ -235,6 +274,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private int _nextEnvId = 1001;
         private int _browserCanvasWidth;
         private int _browserCanvasHeight;
+        private string _selectedManagedGroupName = string.Empty;
 
         public EcommerceWorkspaceSketchApp()
         {
@@ -242,6 +282,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _treeNodeCallback = OnTreeSelected;
             _windowResizeCallback = OnResize;
             _editKeyCallback = OnAddressKey;
+            _groupListCallback = OnGroupListSelected;
         }
 
         private void RefreshDpiScale()
@@ -260,17 +301,17 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             }
 
             _dpi = dpi;
-            _dpiScale = _dpi / 96.0f;
+            _dpiScale = 1.0f;
         }
 
         private int Scale(int value)
         {
-            return Math.Max(1, (int)Math.Round(value * _dpiScale));
+            return value;
         }
 
         private float Scale(float value)
         {
-            return value * _dpiScale;
+            return value;
         }
 
         private int GetRuntimeTitleBarHeight()
@@ -300,14 +341,10 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
         private void CreateWindow()
         {
-            using (Graphics graphics = Graphics.FromHwnd(IntPtr.Zero))
-            {
-                _dpi = Math.Max(96u, (uint)Math.Round(graphics.DpiX));
-                _dpiScale = _dpi / 96.0f;
-            }
-
-            _width = Scale(WindowWidth);
-            _height = Scale(WindowHeight);
+            _dpi = 96;
+            _dpiScale = 1.0f;
+            _width = WindowWidth;
+            _height = WindowHeight;
             byte[] title = U("电商多账号浏览器 - 草图版");
             _window = EmojiWindowNative.create_window_bytes_ex(title, title.Length, -1, -1, _width, _height, Argb(255, 37, 99, 235), Argb(255, 244, 247, 251));
             if (_window == IntPtr.Zero)
@@ -316,8 +353,8 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             }
 
             RefreshDpiScale();
-            _width = Scale(WindowWidth);
-            _height = Scale(WindowHeight);
+            _width = WindowWidth;
+            _height = WindowHeight;
             EmojiWindowNative.SetWindowBounds(_window, -1, -1, _width, _height);
 
             EmojiWindowNative.SetTitleBarTextColor(_window, Argb(255, 255, 255, 255));
@@ -353,6 +390,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _lblLeftTitle = Label(_leftPanel, "环境面板", LeftTitleFontSize, true);
             _lblInfoMain = Label(_infoPanel, string.Empty, InfoMainFontSize, true);
             _lblInfoSub = Label(_infoPanel, string.Empty, InfoSubFontSize, false);
+            CreateGroupManagementControls();
 
             _btnNewEnv = Button(_leftPanel, "新建环境", Argb(255, 37, 99, 235), OnNewEnvironment);
             _btnDeleteEnv = Button(_leftPanel, "删除环境", Argb(255, 239, 68, 68), OnDeleteEnvironment);
@@ -385,19 +423,41 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             SeedTree();
         }
 
+        private void CreateGroupManagementControls()
+        {
+            InitializeGroupManagementUi();
+        }
+
         private void SeedTree()
         {
+            _groupNodes.Clear();
+            _groupEnvironmentIds.Clear();
+            _groupDefaultUrls.Clear();
+            _groupOrder.Clear();
+            _moduleNodes.Clear();
+
             int switchRoot = AddRootNode("环境切换", "🧭", "switch_root", "环境切换");
-            foreach (KeyValuePair<string, (string Name, string Domain, string Proxy, string Status, int Score)[]> group in _groupSeed)
+            foreach ((string GroupName, string DefaultStartUrl) group in LoadEffectiveGroupDefinitions())
             {
-                int groupNodeId = AddChildNode(switchRoot, group.Key, "📁", "group", group.Key);
-                _groupNodes[group.Key] = groupNodeId;
-                _groupEnvironmentIds[group.Key] = new List<int>();
-                foreach ((string name, string domain, string proxy, string status, int score) in group.Value)
+                int groupNodeId = AddChildNode(switchRoot, group.GroupName, "📁", "group", group.GroupName);
+                _groupNodes[group.GroupName] = groupNodeId;
+                _groupOrder.Add(group.GroupName);
+                _groupEnvironmentIds[group.GroupName] = new List<int>();
+
+                if (_groupSeed.TryGetValue(group.GroupName, out (string Name, string Domain, string Proxy, string Status, int Score)[] seedEnvironments))
                 {
-                    int envId = AddEnvironment(groupNodeId, group.Key, name, domain, proxy, status, score);
-                    _groupEnvironmentIds[group.Key].Add(envId);
+                    foreach ((string name, string domain, string proxy, string status, int score) in seedEnvironments)
+                    {
+                        string groupStartUrl = string.IsNullOrWhiteSpace(group.DefaultStartUrl) ? DefaultStartUrl(domain) : group.DefaultStartUrl;
+                        string envDomain = ExtractDomain(groupStartUrl, domain);
+                        int envId = AddEnvironment(groupNodeId, group.GroupName, name, envDomain, proxy, status, score, groupStartUrl);
+                        _groupEnvironmentIds[group.GroupName].Add(envId);
+                    }
                 }
+
+                _groupDefaultUrls[group.GroupName] = string.IsNullOrWhiteSpace(group.DefaultStartUrl)
+                    ? DefaultStartUrl("new-env.local")
+                    : group.DefaultStartUrl;
             }
 
             foreach (KeyValuePair<string, string> module in _moduleIcons)
@@ -408,6 +468,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
             EmojiWindowNative.ExpandAll(_tree);
             _envCounter = _environments.Count + 1;
+            SaveGroupConfiguration();
         }
 
         private int AddRootNode(string text, string icon, string kind, string key)
@@ -428,21 +489,23 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             return nodeId;
         }
 
-        private int AddEnvironment(int groupNodeId, string groupName, string name, string domain, string proxy, string status, int score)
+        private int AddEnvironment(int groupNodeId, string groupName, string name, string domain, string proxy, string status, int score, string startUrlOverride = null)
         {
             int nodeId = AddChildNode(groupNodeId, name, "●", "environment", name);
             int envId = _nextEnvId++;
+            string startUrl = string.IsNullOrWhiteSpace(startUrlOverride) ? DefaultStartUrl(domain) : NormalizeUrl(startUrlOverride);
+            string normalizedDomain = ExtractDomain(startUrl, domain);
             EnvironmentRecord env = new EnvironmentRecord
             {
                 EnvId = envId,
                 NodeId = nodeId,
                 GroupName = groupName,
                 Name = name,
-                Domain = domain,
+                Domain = normalizedDomain,
                 Proxy = proxy,
                 Status = status,
                 Score = score,
-                StartUrl = DefaultStartUrl(domain),
+                StartUrl = startUrl,
                 CachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache", $"env_{envId}"),
                 BrowserFlag = $"env_{envId}",
                 CookiePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cookies", $"env_{envId}.json"),
@@ -525,6 +588,8 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             using (new RedrawScope(_window))
             {
                 _currentNodeId = nodeId;
+                bool showGroupManagement = meta.Kind == "module" && meta.Key == "分组管理";
+                SetGroupManagementVisible(showGroupManagement);
                 if (meta.Kind == "environment" && meta.EnvId.HasValue)
                 {
                     _toolbarVisible = true;
@@ -544,7 +609,14 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                     else if (meta.Kind == "module")
                     {
                         _toolbarVisible = false;
-                        RenderModule(meta.Key);
+                        if (showGroupManagement)
+                        {
+                            RenderGroupManagement();
+                        }
+                        else
+                        {
+                            RenderModule(meta.Key);
+                        }
                     }
                     else
                     {
@@ -583,6 +655,11 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             SetWindowTitle($"电商多账号浏览器 - {moduleName}");
         }
 
+        private void RenderGroupManagement()
+        {
+            RenderGroupManagementModule();
+        }
+
         private void RenderSwitchRoot()
         {
             SetLabelText(_lblInfoMain, "环境切换");
@@ -596,7 +673,9 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             string shortGroup = groupName.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)[0];
             string envName = $"{shortGroup}-环境{_envCounter:00}";
             string proxy = $"Proxy-{_envCounter:00}";
-            int envId = AddEnvironment(groupNodeId, groupName, envName, "new-env.local", proxy, "待启动", 80);
+            string startUrl = GetGroupDefaultUrl(groupName, DefaultStartUrl("new-env.local"));
+            string domain = ExtractDomain(startUrl, "new-env.local");
+            int envId = AddEnvironment(groupNodeId, groupName, envName, domain, proxy, "待启动", 80, startUrl);
             _groupEnvironmentIds[groupName].Add(envId);
             _envCounter++;
 
@@ -806,6 +885,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 (_browserPanel, browserBg),
                 (_browserFrame, panelBg),
                 (_browserCanvas, canvasBg),
+                (_groupManagementPanel, canvasBg),
             })
             {
                 EmojiWindowNative.SetPanelBackgroundColor(panel, color);
@@ -814,9 +894,21 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             SetLabelColors(_lblLeftTitle, text, leftBg);
             SetLabelColors(_lblInfoMain, text, panelBg);
             SetLabelColors(_lblInfoSub, muted, panelBg);
+            SetLabelColors(_lblGroupListTitle, text, canvasBg);
+            SetLabelColors(_lblGroupEditorTitle, text, canvasBg);
+            SetLabelColors(_lblGroupNameCaption, text, canvasBg);
+            SetLabelColors(_lblGroupUrlCaption, text, canvasBg);
+            SetLabelColors(_lblGroupStats, muted, canvasBg);
+            SetLabelColors(_lblGroupHint, muted, canvasBg);
             EmojiWindowNative.SetLabelFont(_lblLeftTitle, _fontYaHei, _fontYaHei.Length, Scale(LeftTitleFontSize), 1, 0, 0);
             EmojiWindowNative.SetLabelFont(_lblInfoMain, _fontYaHei, _fontYaHei.Length, Scale(InfoMainFontSize), 1, 0, 0);
             EmojiWindowNative.SetLabelFont(_lblInfoSub, _fontYaHei, _fontYaHei.Length, Scale(InfoSubFontSize), 0, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblGroupListTitle, _fontYaHei, _fontYaHei.Length, Scale(12), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblGroupEditorTitle, _fontYaHei, _fontYaHei.Length, Scale(12), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblGroupNameCaption, _fontYaHei, _fontYaHei.Length, Scale(11), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblGroupUrlCaption, _fontYaHei, _fontYaHei.Length, Scale(11), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblGroupStats, _fontYaHei, _fontYaHei.Length, Scale(11), 0, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblGroupHint, _fontYaHei, _fontYaHei.Length, Scale(11), 0, 0, 0);
 
             foreach (EnvironmentRecord env in _environments.Values)
             {
@@ -842,9 +934,20 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             PaintButton(_btnNewEnv, Argb(255, 37, 99, 235));
             PaintButton(_btnDeleteEnv, Argb(255, 239, 68, 68));
             PaintButton(_btnTheme, Argb(255, 245, 158, 11));
+            PaintButton(_btnGroupSave, Argb(255, 37, 99, 235));
+            PaintButton(_btnGroupAdd, Argb(255, 34, 197, 94));
+            PaintButton(_btnGroupDelete, Argb(255, 239, 68, 68));
             EmojiWindowNative.SetButtonRound(_btnNewEnv, 0);
             EmojiWindowNative.SetButtonRound(_btnDeleteEnv, 0);
+            EmojiWindowNative.SetButtonRound(_btnGroupSave, 1);
+            EmojiWindowNative.SetButtonRound(_btnGroupAdd, 1);
+            EmojiWindowNative.SetButtonRound(_btnGroupDelete, 1);
             SetButtonText(_btnTheme, dark ? "☀️" : "🌙");
+            EmojiWindowNative.SetEditBoxColor(_editGroupName, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255));
+            EmojiWindowNative.SetEditBoxColor(_editGroupUrl, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255));
+            EmojiWindowNative.SetEditBoxFont(_editGroupName, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
+            EmojiWindowNative.SetEditBoxFont(_editGroupUrl, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
+            EmojiWindowNative.SetListBoxColors(_groupListBox, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255), accent, dark ? ShiftColor(leftBg, 8) : MixColor(accent, leftBg, 0.88f));
 
             for (int i = 0; i < _toolbarButtons.Count; i++)
             {
@@ -939,6 +1042,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
             _browserCanvasWidth = Math.Max(Scale(240), rightWidth - Scale(32));
             _browserCanvasHeight = Math.Max(Scale(160), browserHeight - Scale(32));
+            LayoutGroupManagementPage();
             foreach (EnvironmentRecord env in _environments.Values)
             {
                 LayoutEnvironmentHost(env);
@@ -1012,6 +1116,11 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 {
                     return (env.GroupName, _groupNodes[env.GroupName]);
                 }
+
+                if (meta.Kind == "module" && meta.Key == "分组管理" && !string.IsNullOrWhiteSpace(_selectedManagedGroupName) && _groupNodes.TryGetValue(_selectedManagedGroupName, out int managedGroupNodeId))
+                {
+                    return (_selectedManagedGroupName, managedGroupNodeId);
+                }
             }
 
             foreach (KeyValuePair<string, int> item in _groupNodes)
@@ -1020,6 +1129,57 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             }
 
             throw new InvalidOperationException("No group node found.");
+        }
+
+        private void OnGroupListSelected(IntPtr hListBox, int index)
+        {
+            HandleGroupListSelection(index);
+        }
+
+        private void SetGroupManagementVisible(bool visible)
+        {
+            ApplyGroupManagementVisibility(visible);
+        }
+
+        private void EnsureManagedGroupSelection()
+        {
+            EnsureGroupManagementSelection();
+        }
+
+        private void RefreshGroupManagementList()
+        {
+            RefreshGroupManagementListItems();
+        }
+
+        private void BindGroupManagementEditor(string groupName)
+        {
+            BindGroupManagementEditorState(groupName);
+        }
+
+        private void LayoutGroupManagementPage()
+        {
+            LayoutGroupManagementModule();
+        }
+
+        private void OnSaveGroupConfig()
+        {
+            SaveGroupManagementChanges();
+        }
+        private void OnAddGroup()
+        {
+            AddManagedGroup();
+        }
+        private void OnDeleteGroup()
+        {
+            DeleteManagedGroup();
+        }
+        private void RebuildNavigationTree()
+        {
+            RebuildGroupNavigationTree();
+        }
+        private void ReopenGroupManagementModule()
+        {
+            ActivateGroupManagementModule();
         }
 
         private EnvironmentRecord CurrentEnvironment()
@@ -1071,8 +1231,8 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 parent_window = env.BrowserView,
                 x = 0,
                 y = 0,
-                width = Math.Max(220, _browserCanvasWidth - 32),
-                height = Math.Max(120, _browserCanvasHeight - 84),
+                width = ToPixels(env.BrowserView, Math.Max(220, _browserCanvasWidth - 32)),
+                height = ToPixels(env.BrowserView, Math.Max(120, _browserCanvasHeight - 84)),
                 window_name = env.Name,
             };
 
@@ -1141,7 +1301,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 return;
             }
 
-            browser.MoveWindow(0, 0, Math.Max(1, width), Math.Max(1, height), true);
+            browser.MoveWindow(0, 0, ToPixels(env.BrowserView, Math.Max(1, width)), ToPixels(env.BrowserView, Math.Max(1, height)), true);
         }
 
         private void NavigateBrowser(EnvironmentRecord env, string normalized)
@@ -1362,6 +1522,32 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             return $"https://{domain}";
         }
 
+        private string GetGroupDefaultUrl(string groupName, string fallback = "")
+        {
+            if (!string.IsNullOrWhiteSpace(groupName) && _groupDefaultUrls.TryGetValue(groupName, out string value) && !string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+
+            return fallback;
+        }
+
+        private string ExtractDomain(string urlOrDomain, string fallback = "new-env.local")
+        {
+            if (string.IsNullOrWhiteSpace(urlOrDomain))
+            {
+                return fallback;
+            }
+
+            string normalized = NormalizeUrl(urlOrDomain);
+            if (Uri.TryCreate(normalized, UriKind.Absolute, out Uri uri) && !string.IsNullOrWhiteSpace(uri.Host))
+            {
+                return uri.Host;
+            }
+
+            return urlOrDomain.Trim();
+        }
+
         private string NormalizeUrl(string url)
         {
             string value = (url ?? string.Empty).Trim();
@@ -1517,7 +1703,18 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
         private static void Move(IntPtr hwnd, int x, int y, int width, int height)
         {
-            NativeExtras.MoveWindow(hwnd, x, y, width, height, true);
+            EmojiWindowNative.SetWindowBounds(hwnd, x, y, width, height);
+        }
+
+        private static int ToPixels(IntPtr hwnd, int logicalValue)
+        {
+            uint dpi = hwnd != IntPtr.Zero ? NativeExtras.GetDpiForWindow(hwnd) : 96;
+            if (dpi == 0)
+            {
+                dpi = 96;
+            }
+
+            return Math.Max(1, (int)Math.Round(logicalValue * (dpi / 96.0f)));
         }
 
         private static uint Argb(int a, int r, int g, int b)
@@ -1569,3 +1766,4 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         }
     }
 }
+
