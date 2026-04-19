@@ -33,7 +33,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             RefreshGroupManagementListItems();
             BindGroupManagementEditorState(_selectedManagedGroupName);
             SetLabelText(_lblInfoMain, "当前模块：分组管理");
-            SetLabelText(_lblInfoSub, "右侧可配置分组名称、默认打开网址，并管理新增/删除分组。");
+            SetLabelText(_lblInfoSub, "右侧可配置分组名称、默认打开网址，并管理新增、删除分组。");
             SetWindowTitle("电商多账号浏览器 - 分组管理");
         }
 
@@ -379,9 +379,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 return;
             }
 
-            string normalizedOld = NormalizeUrl(oldDefaultUrl);
             string normalizedNew = NormalizeUrl(newDefaultUrl);
-
             foreach (int envId in envIds)
             {
                 if (!_environments.TryGetValue(envId, out EnvironmentRecord env))
@@ -389,13 +387,9 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                     continue;
                 }
 
-                string previousStart = NormalizeUrl(env.StartUrl);
-                string previousLast = NormalizeUrl(env.LastUrl);
-
                 env.StartUrl = normalizedNew;
-                env.Domain = ExtractDomain(normalizedNew, env.Domain);
-
                 env.LastUrl = normalizedNew;
+                env.Domain = ExtractDomain(normalizedNew, env.Domain);
 
                 if (env.AddressEdit != IntPtr.Zero && _currentEnvId == env.EnvId)
                 {

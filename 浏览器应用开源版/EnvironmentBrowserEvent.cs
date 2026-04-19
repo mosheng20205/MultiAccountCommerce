@@ -13,19 +13,23 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private readonly Action<string, string> _addressChanged;
         private readonly Action<string, string> _titleChanged;
         private readonly Action<string> _browserClosed;
+        private readonly Action<string> _browserCreated;
 
         public EnvironmentBrowserEvent(
             Action<string, string> addressChanged,
             Action<string, string> titleChanged,
-            Action<string> browserClosed)
+            Action<string> browserClosed,
+            Action<string> browserCreated = null)
         {
             _addressChanged = addressChanged;
             _titleChanged = titleChanged;
             _browserClosed = browserClosed;
+            _browserCreated = browserCreated;
         }
 
         public override void OnAfterCreated(IFBroSharpBrowser browser, IFBroSharpDictionaryValue extrainfo)
         {
+            _browserCreated?.Invoke(browser.GetUserFlag());
             IFBroSharpFrame frame = browser.GetMainFrame();
             if (frame != null)
             {

@@ -77,6 +77,17 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             private const uint RdwAllChildren = 0x0080;
             private const uint RdwFrame = 0x0400;
             private const uint RdwUpdateNow = 0x0100;
+            private const int SmCxScreen = 0;
+            private const int SmCyScreen = 1;
+
+            [StructLayout(LayoutKind.Sequential)]
+            public struct Rect
+            {
+                public int Left;
+                public int Top;
+                public int Right;
+                public int Bottom;
+            }
 
             [DllImport("emoji_window.dll", CallingConvention = CallingConvention.StdCall)]
             public static extern int ClearTree(IntPtr hTreeView);
@@ -104,6 +115,26 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
             [DllImport("user32.dll")]
             public static extern uint GetDpiForWindow(IntPtr hwnd);
+
+            [DllImport("user32.dll")]
+            public static extern uint GetDpiForSystem();
+
+            [DllImport("user32.dll")]
+            public static extern int GetSystemMetrics(int index);
+
+            [DllImport("user32.dll")]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+
+            public static int GetPrimaryScreenWidth()
+            {
+                return GetSystemMetrics(SmCxScreen);
+            }
+
+            public static int GetPrimaryScreenHeight()
+            {
+                return GetSystemMetrics(SmCyScreen);
+            }
 
             [DllImport("user32.dll", SetLastError = true)]
             private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
@@ -180,6 +211,8 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private readonly Dictionary<string, List<int>> _groupEnvironmentIds = new Dictionary<string, List<int>>();
         private readonly Dictionary<string, string> _groupDefaultUrls = new Dictionary<string, string>();
         private readonly List<string> _groupOrder = new List<string>();
+        private readonly Dictionary<string, ProxyConfig> _proxyConfigs = new Dictionary<string, ProxyConfig>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> _proxyOrder = new List<string>();
         private readonly Dictionary<string, int> _moduleNodes = new Dictionary<string, int>();
         private readonly Dictionary<int, EnvironmentRecord> _environments = new Dictionary<int, EnvironmentRecord>();
         private readonly Dictionary<int, int> _nodeToEnvId = new Dictionary<int, int>();
@@ -230,6 +263,9 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private readonly EmojiWindowNative.WindowResizeCallback _windowResizeCallback;
         private readonly EmojiWindowNative.EditBoxKeyCallback _editKeyCallback;
         private readonly EmojiWindowNative.ListBoxCallback _groupListCallback;
+        private readonly EmojiWindowNative.ListBoxCallback _proxyListCallback;
+        private readonly EmojiWindowNative.ComboBoxCallback _proxyTypeCallback;
+        private readonly EmojiWindowNative.RadioButtonCallback _proxyRadioCallback;
 
         private IntPtr _window;
         private IntPtr _leftPanel;
@@ -255,6 +291,43 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private IntPtr _lblGroupHint;
         private IntPtr _editGroupName;
         private IntPtr _editGroupUrl;
+        private IntPtr _commercialModulePanel;
+        private IntPtr _commercialHeroPanel;
+        private IntPtr _commercialBadgePanel;
+        private IntPtr _commercialCard1Panel;
+        private IntPtr _commercialCard2Panel;
+        private IntPtr _commercialCard3Panel;
+        private IntPtr _commercialFooterPanel;
+        private IntPtr _lblCommercialModuleTitle;
+        private IntPtr _lblCommercialModuleSubtitle;
+        private IntPtr _lblCommercialModuleBadge;
+        private IntPtr _lblCommercialModuleFeature1Title;
+        private IntPtr _lblCommercialModuleFeature1;
+        private IntPtr _lblCommercialModuleFeature2Title;
+        private IntPtr _lblCommercialModuleFeature2;
+        private IntPtr _lblCommercialModuleFeature3Title;
+        private IntPtr _lblCommercialModuleFeature3;
+        private IntPtr _lblCommercialModuleHint;
+        private IntPtr _proxyManagementPanel;
+        private IntPtr _proxyListBox;
+        private IntPtr _radioHttp;
+        private IntPtr _radioSocks5;
+        private int _btnProxyTypeHttp;
+        private int _btnProxyTypeSocks5;
+        private IntPtr _lblProxyListTitle;
+        private IntPtr _lblProxyEditorTitle;
+        private IntPtr _lblProxyNameCaption;
+        private IntPtr _lblProxyTypeCaption;
+        private IntPtr _lblProxyHostCaption;
+        private IntPtr _lblProxyPortCaption;
+        private IntPtr _lblProxyUserCaption;
+        private IntPtr _lblProxyPasswordCaption;
+        private IntPtr _lblProxyHint;
+        private IntPtr _editProxyName;
+        private IntPtr _editProxyHost;
+        private IntPtr _editProxyPort;
+        private IntPtr _editProxyUser;
+        private IntPtr _editProxyPassword;
 
         private int _btnNewEnv;
         private int _btnDeleteEnv;
@@ -262,6 +335,9 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private int _btnGroupSave;
         private int _btnGroupAdd;
         private int _btnGroupDelete;
+        private int _btnProxySave;
+        private int _btnProxyAdd;
+        private int _btnProxyDelete;
         private int _width = WindowWidth;
         private int _height = WindowHeight;
         private uint _dpi = 96;
@@ -275,6 +351,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private int _browserCanvasWidth;
         private int _browserCanvasHeight;
         private string _selectedManagedGroupName = string.Empty;
+        private string _selectedManagedProxyName = string.Empty;
 
         public EcommerceWorkspaceSketchApp()
         {
@@ -283,6 +360,9 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _windowResizeCallback = OnResize;
             _editKeyCallback = OnAddressKey;
             _groupListCallback = OnGroupListSelected;
+            _proxyListCallback = OnProxyListSelected;
+            _proxyTypeCallback = OnProxyTypeChanged;
+            _proxyRadioCallback = OnProxyTypeRadioChanged;
         }
 
         private void RefreshDpiScale()
@@ -346,7 +426,8 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _width = WindowWidth;
             _height = WindowHeight;
             byte[] title = U("电商多账号浏览器 - 草图版");
-            _window = EmojiWindowNative.create_window_bytes_ex(title, title.Length, -1, -1, _width, _height, Argb(255, 37, 99, 235), Argb(255, 244, 247, 251));
+            CalculateCenteredWindowBounds(_width, _height, out int windowX, out int windowY);
+            _window = EmojiWindowNative.create_window_bytes_ex(title, title.Length, windowX, windowY, _width, _height, Argb(255, 37, 99, 235), Argb(255, 244, 247, 251));
             if (_window == IntPtr.Zero)
             {
                 throw new InvalidOperationException("create_window_bytes_ex failed.");
@@ -355,7 +436,6 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             RefreshDpiScale();
             _width = WindowWidth;
             _height = WindowHeight;
-            EmojiWindowNative.SetWindowBounds(_window, -1, -1, _width, _height);
 
             EmojiWindowNative.SetTitleBarTextColor(_window, Argb(255, 255, 255, 255));
 
@@ -375,6 +455,20 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             }
         }
 
+        private void CalculateCenteredWindowBounds(int width, int height, out int x, out int y)
+        {
+            uint dpi = NativeExtras.GetDpiForSystem();
+            if (dpi == 0)
+            {
+                dpi = 96;
+            }
+
+            int screenWidth = Math.Max(width, (int)Math.Round(NativeExtras.GetPrimaryScreenWidth() * 96.0 / dpi));
+            int screenHeight = Math.Max(height, (int)Math.Round(NativeExtras.GetPrimaryScreenHeight() * 96.0 / dpi));
+            x = Math.Max(0, (screenWidth - width) / 2);
+            y = Math.Max(0, (screenHeight - height) / 2);
+        }
+
         private void CreateControls()
         {
             _leftPanel = EmojiWindowNative.CreatePanel(_window, 0, 0, 100, 100, Argb(255, 255, 255, 255));
@@ -391,6 +485,8 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _lblInfoMain = Label(_infoPanel, string.Empty, InfoMainFontSize, true);
             _lblInfoSub = Label(_infoPanel, string.Empty, InfoSubFontSize, false);
             CreateGroupManagementControls();
+            CreateProxyManagementControls();
+            CreateCommercialModuleControls();
 
             _btnNewEnv = Button(_leftPanel, "新建环境", Argb(255, 37, 99, 235), OnNewEnvironment);
             _btnDeleteEnv = Button(_leftPanel, "删除环境", Argb(255, 239, 68, 68), OnDeleteEnvironment);
@@ -421,11 +517,128 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             EmojiWindowNative.SetTreeViewFont(_tree, _fontYaHei, _fontYaHei.Length, TreeFontSize, 400, 0);
             EmojiWindowNative.SetTreeViewCallback(_tree, CallbackNodeSelected, _treeNodeCallback);
             SeedTree();
+            InitializeProxyCatalog();
         }
 
         private void CreateGroupManagementControls()
         {
             InitializeGroupManagementUi();
+        }
+
+        private void CreateProxyManagementControls()
+        {
+            InitializeProxyManagementUi();
+        }
+
+        private void CreateCommercialModuleControls()
+        {
+            _commercialModulePanel = EmojiWindowNative.CreatePanel(_browserCanvas, 0, 0, 100, 100, Argb(255, 249, 251, 253));
+            _commercialHeroPanel = EmojiWindowNative.CreatePanel(_commercialModulePanel, 0, 0, 100, 100, Argb(255, 15, 23, 42));
+            _commercialBadgePanel = EmojiWindowNative.CreatePanel(_commercialModulePanel, 0, 0, 100, 100, Argb(255, 219, 234, 254));
+            _commercialCard1Panel = EmojiWindowNative.CreatePanel(_commercialModulePanel, 0, 0, 100, 100, Argb(255, 255, 255, 255));
+            _commercialCard2Panel = EmojiWindowNative.CreatePanel(_commercialModulePanel, 0, 0, 100, 100, Argb(255, 255, 255, 255));
+            _commercialCard3Panel = EmojiWindowNative.CreatePanel(_commercialModulePanel, 0, 0, 100, 100, Argb(255, 255, 255, 255));
+            _commercialFooterPanel = EmojiWindowNative.CreatePanel(_commercialModulePanel, 0, 0, 100, 100, Argb(255, 239, 246, 255));
+            _lblCommercialModuleTitle = Label(_commercialHeroPanel, string.Empty, 28, true);
+            _lblCommercialModuleSubtitle = Label(_commercialHeroPanel, string.Empty, 16, false);
+            _lblCommercialModuleBadge = Label(_commercialBadgePanel, "COMMERCIAL EDITION", 13, true);
+            _lblCommercialModuleFeature1Title = Label(_commercialCard1Panel, string.Empty, 17, true);
+            _lblCommercialModuleFeature1 = Label(_commercialCard1Panel, string.Empty, 14, false);
+            _lblCommercialModuleFeature2Title = Label(_commercialCard2Panel, string.Empty, 17, true);
+            _lblCommercialModuleFeature2 = Label(_commercialCard2Panel, string.Empty, 14, false);
+            _lblCommercialModuleFeature3Title = Label(_commercialCard3Panel, string.Empty, 17, true);
+            _lblCommercialModuleFeature3 = Label(_commercialCard3Panel, string.Empty, 14, false);
+            _lblCommercialModuleHint = Label(_commercialFooterPanel, string.Empty, 16, false);
+            SetCommercialModuleVisible(false);
+        }
+
+        private void SetCommercialModuleVisible(bool visible)
+        {
+            int show = visible ? SwShow : SwHide;
+            if (_commercialModulePanel != IntPtr.Zero)
+            {
+                NativeExtras.ShowWindow(_commercialModulePanel, show);
+            }
+
+            foreach (IntPtr panel in new[]
+            {
+                _commercialHeroPanel,
+                _commercialBadgePanel,
+                _commercialCard1Panel,
+                _commercialCard2Panel,
+                _commercialCard3Panel,
+                _commercialFooterPanel
+            })
+            {
+                if (panel != IntPtr.Zero)
+                {
+                    NativeExtras.ShowWindow(panel, show);
+                }
+            }
+
+            foreach (IntPtr label in new[]
+            {
+                _lblCommercialModuleTitle,
+                _lblCommercialModuleSubtitle,
+                _lblCommercialModuleBadge,
+                _lblCommercialModuleFeature1Title,
+                _lblCommercialModuleFeature1,
+                _lblCommercialModuleFeature2Title,
+                _lblCommercialModuleFeature2,
+                _lblCommercialModuleFeature3Title,
+                _lblCommercialModuleFeature3,
+                _lblCommercialModuleHint
+            })
+            {
+                if (label != IntPtr.Zero)
+                {
+                    EmojiWindowNative.ShowLabel(label, visible ? 1 : 0);
+                }
+            }
+        }
+
+        private void LayoutCommercialModulePage()
+        {
+            if (_commercialModulePanel == IntPtr.Zero || _browserCanvasWidth <= 0 || _browserCanvasHeight <= 0)
+            {
+                return;
+            }
+
+            Move(_commercialModulePanel, 0, 0, _browserCanvasWidth, _browserCanvasHeight);
+
+            int outer = Scale(48);
+            int contentWidth = Math.Max(Scale(680), _browserCanvasWidth - outer * 2);
+            int heroHeight = Scale(178);
+            int cardGap = Scale(18);
+            int heroX = outer;
+            int heroY = Scale(46);
+            Move(_commercialHeroPanel, heroX, heroY, contentWidth, heroHeight);
+            Move(_commercialBadgePanel, heroX + contentWidth - Scale(212), heroY + Scale(30), Scale(168), Scale(34));
+            EmojiWindowNative.SetLabelBounds(_lblCommercialModuleBadge, Scale(10), Scale(5), Scale(148), Scale(24));
+            EmojiWindowNative.SetLabelBounds(_lblCommercialModuleTitle, Scale(42), Scale(38), contentWidth - Scale(300), Scale(46));
+            EmojiWindowNative.SetLabelBounds(_lblCommercialModuleSubtitle, Scale(42), Scale(102), contentWidth - Scale(116), Scale(46));
+
+            int cardY = heroY + heroHeight + Scale(28);
+            int cardHeight = Scale(150);
+            int cardWidth = (contentWidth - cardGap * 2) / 3;
+            int card1X = heroX;
+            int card2X = card1X + cardWidth + cardGap;
+            int card3X = card2X + cardWidth + cardGap;
+            Move(_commercialCard1Panel, card1X, cardY, cardWidth, cardHeight);
+            Move(_commercialCard2Panel, card2X, cardY, cardWidth, cardHeight);
+            Move(_commercialCard3Panel, card3X, cardY, cardWidth, cardHeight);
+
+            int cardInset = Scale(22);
+            EmojiWindowNative.SetLabelBounds(_lblCommercialModuleFeature1Title, cardInset, Scale(24), cardWidth - cardInset * 2, Scale(28));
+            EmojiWindowNative.SetLabelBounds(_lblCommercialModuleFeature1, cardInset, Scale(66), cardWidth - cardInset * 2, Scale(58));
+            EmojiWindowNative.SetLabelBounds(_lblCommercialModuleFeature2Title, cardInset, Scale(24), cardWidth - cardInset * 2, Scale(28));
+            EmojiWindowNative.SetLabelBounds(_lblCommercialModuleFeature2, cardInset, Scale(66), cardWidth - cardInset * 2, Scale(58));
+            EmojiWindowNative.SetLabelBounds(_lblCommercialModuleFeature3Title, cardInset, Scale(24), cardWidth - cardInset * 2, Scale(28));
+            EmojiWindowNative.SetLabelBounds(_lblCommercialModuleFeature3, cardInset, Scale(66), cardWidth - cardInset * 2, Scale(58));
+
+            int footerY = cardY + cardHeight + Scale(26);
+            Move(_commercialFooterPanel, heroX, footerY, contentWidth, Scale(78));
+            EmojiWindowNative.SetLabelBounds(_lblCommercialModuleHint, Scale(28), Scale(22), contentWidth - Scale(56), Scale(36));
         }
 
         private void SeedTree()
@@ -589,7 +802,10 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             {
                 _currentNodeId = nodeId;
                 bool showGroupManagement = meta.Kind == "module" && meta.Key == "分组管理";
+                bool showProxyManagement = meta.Kind == "module" && meta.Key == "代理管理";
                 SetGroupManagementVisible(showGroupManagement);
+                SetProxyManagementVisible(showProxyManagement);
+                SetCommercialModuleVisible(false);
                 if (meta.Kind == "environment" && meta.EnvId.HasValue)
                 {
                     _toolbarVisible = true;
@@ -612,6 +828,10 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                         if (showGroupManagement)
                         {
                             RenderGroupManagement();
+                        }
+                        else if (showProxyManagement)
+                        {
+                            RenderProxyManagement();
                         }
                         else
                         {
@@ -650,9 +870,68 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
         private void RenderModule(string moduleName)
         {
+            if (IsCommercialOnlyModule(moduleName))
+            {
+                RenderCommercialOnlyModule(moduleName);
+                return;
+            }
+
             SetLabelText(_lblInfoMain, $"当前模块：{moduleName}");
             SetLabelText(_lblInfoSub, "该区域先保留为模块工作区占位，后续可替换为真实业务页面");
             SetWindowTitle($"电商多账号浏览器 - {moduleName}");
+        }
+
+        private bool IsCommercialOnlyModule(string moduleName)
+        {
+            return moduleName == "RPA自动化" || moduleName == "插件中心" || moduleName == "团队协作";
+        }
+
+        private void RenderCommercialOnlyModule(string moduleName)
+        {
+            SetCommercialModuleVisible(true);
+            SetLabelText(_lblInfoMain, $"当前模块：{moduleName}");
+            SetLabelText(_lblInfoSub, "该功能属于商业版能力，开源版保留入口用于展示产品结构。");
+            SetWindowTitle($"电商多账号浏览器 - {moduleName}");
+
+            SetLabelText(_lblCommercialModuleTitle, $"{moduleName} 商业版增强能力");
+            SetLabelText(_lblCommercialModuleSubtitle, CommercialModuleSubtitle(moduleName));
+            SetLabelText(_lblCommercialModuleFeature1Title, "开源版包含");
+            SetLabelText(_lblCommercialModuleFeature1, "保留菜单入口、界面占位和基础产品结构，便于了解整体工作流。");
+            SetLabelText(_lblCommercialModuleFeature2Title, "商业版解锁");
+            SetLabelText(_lblCommercialModuleFeature2, CommercialModuleFeatureText(moduleName));
+            SetLabelText(_lblCommercialModuleFeature3Title, "授权与交付");
+            SetLabelText(_lblCommercialModuleFeature3, "包含可用页面、运行逻辑、数据保存、部署支持和持续升级服务。");
+            SetLabelText(_lblCommercialModuleHint, "商业版同时支持 SOCKS5 账号密码代理、浏览器指纹配置与更多多账号隔离能力。");
+        }
+
+        private string CommercialModuleSubtitle(string moduleName)
+        {
+            switch (moduleName)
+            {
+                case "RPA自动化":
+                    return "把重复运营流程沉淀为可编排任务，适合批量店铺、账号和内容运营场景。";
+                case "插件中心":
+                    return "通过插件化能力扩展采集、同步、工具链和平台适配，减少重复开发成本。";
+                case "团队协作":
+                    return "面向团队统一管理环境、成员、权限和协作流程，让账号资产有序流转。";
+                default:
+                    return "当前开源版不包含该模块的业务实现。如需使用，请购买商业版或联系作者获取授权。";
+            }
+        }
+
+        private string CommercialModuleFeatureText(string moduleName)
+        {
+            switch (moduleName)
+            {
+                case "RPA自动化":
+                    return "任务编排、批量执行、自动登录、自动发布、自动采集等完整 RPA 能力。";
+                case "插件中心":
+                    return "插件安装、启停、配置、扩展市场和业务能力接入，支持持续扩展。";
+                case "团队协作":
+                    return "成员管理、角色权限、环境共享、操作协同和团队级资产管理。";
+                default:
+                    return "完整模块实现、商业授权、部署支持和持续升级服务。";
+            }
         }
 
         private void RenderGroupManagement()
@@ -840,8 +1119,17 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 return;
             }
 
-            env.Proxy = $"{env.Proxy}-ALT";
+            if (_proxyOrder.Count == 0)
+            {
+                SetLabelText(_lblInfoSub, "当前没有可用代理，请先在代理管理中新增代理。");
+                return;
+            }
+
+            int currentIndex = _proxyOrder.FindIndex(item => string.Equals(item, env.Proxy, StringComparison.OrdinalIgnoreCase));
+            int nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % _proxyOrder.Count;
+            env.Proxy = _proxyOrder[nextIndex];
             RenderEnvironment(env);
+            SetLabelText(_lblInfoSub, $"域名：{env.Domain}   代理：{env.Proxy}   状态：已切换代理配置");
         }
 
         private void ToggleTheme()
@@ -869,6 +1157,13 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             uint muted = dark ? Argb(255, 148, 163, 184) : Argb(255, 100, 116, 139);
             uint titlebar = dark ? Argb(255, 15, 23, 42) : Argb(255, 37, 99, 235);
             uint accent = dark ? Argb(255, 96, 165, 250) : Argb(255, 37, 99, 235);
+            uint commercialHero = dark ? Argb(255, 15, 23, 42) : Argb(255, 15, 23, 42);
+            uint commercialHeroText = Argb(255, 248, 250, 252);
+            uint commercialHeroMuted = dark ? Argb(255, 191, 219, 254) : Argb(255, 219, 234, 254);
+            uint commercialBadgeBg = dark ? Argb(255, 30, 64, 175) : Argb(255, 219, 234, 254);
+            uint commercialBadgeText = dark ? Argb(255, 219, 234, 254) : Argb(255, 29, 78, 216);
+            uint commercialCardBg = dark ? Argb(255, 30, 36, 48) : Argb(255, 255, 255, 255);
+            uint commercialFooterBg = dark ? Argb(255, 24, 32, 44) : Argb(255, 239, 246, 255);
 
             EmojiWindowNative.set_window_titlebar_color(_window, titlebar);
             EmojiWindowNative.SetTitleBarTextColor(_window, Argb(255, 255, 255, 255));
@@ -886,6 +1181,14 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 (_browserFrame, panelBg),
                 (_browserCanvas, canvasBg),
                 (_groupManagementPanel, canvasBg),
+                (_proxyManagementPanel, canvasBg),
+                (_commercialModulePanel, canvasBg),
+                (_commercialHeroPanel, commercialHero),
+                (_commercialBadgePanel, commercialBadgeBg),
+                (_commercialCard1Panel, commercialCardBg),
+                (_commercialCard2Panel, commercialCardBg),
+                (_commercialCard3Panel, commercialCardBg),
+                (_commercialFooterPanel, commercialFooterBg),
             })
             {
                 EmojiWindowNative.SetPanelBackgroundColor(panel, color);
@@ -900,6 +1203,25 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             SetLabelColors(_lblGroupUrlCaption, text, canvasBg);
             SetLabelColors(_lblGroupStats, muted, canvasBg);
             SetLabelColors(_lblGroupHint, muted, canvasBg);
+            SetLabelColors(_lblProxyListTitle, text, canvasBg);
+            SetLabelColors(_lblProxyEditorTitle, text, canvasBg);
+            SetLabelColors(_lblProxyNameCaption, text, canvasBg);
+            SetLabelColors(_lblProxyTypeCaption, text, canvasBg);
+            SetLabelColors(_lblProxyHostCaption, text, canvasBg);
+            SetLabelColors(_lblProxyPortCaption, text, canvasBg);
+            SetLabelColors(_lblProxyUserCaption, text, canvasBg);
+            SetLabelColors(_lblProxyPasswordCaption, text, canvasBg);
+            SetLabelColors(_lblProxyHint, muted, canvasBg);
+            SetLabelColors(_lblCommercialModuleTitle, commercialHeroText, commercialHero);
+            SetLabelColors(_lblCommercialModuleSubtitle, commercialHeroMuted, commercialHero);
+            SetLabelColors(_lblCommercialModuleBadge, commercialBadgeText, commercialBadgeBg);
+            SetLabelColors(_lblCommercialModuleFeature1Title, text, commercialCardBg);
+            SetLabelColors(_lblCommercialModuleFeature1, muted, commercialCardBg);
+            SetLabelColors(_lblCommercialModuleFeature2Title, text, commercialCardBg);
+            SetLabelColors(_lblCommercialModuleFeature2, muted, commercialCardBg);
+            SetLabelColors(_lblCommercialModuleFeature3Title, text, commercialCardBg);
+            SetLabelColors(_lblCommercialModuleFeature3, muted, commercialCardBg);
+            SetLabelColors(_lblCommercialModuleHint, dark ? Argb(255, 191, 219, 254) : Argb(255, 30, 64, 175), commercialFooterBg);
             EmojiWindowNative.SetLabelFont(_lblLeftTitle, _fontYaHei, _fontYaHei.Length, Scale(LeftTitleFontSize), 1, 0, 0);
             EmojiWindowNative.SetLabelFont(_lblInfoMain, _fontYaHei, _fontYaHei.Length, Scale(InfoMainFontSize), 1, 0, 0);
             EmojiWindowNative.SetLabelFont(_lblInfoSub, _fontYaHei, _fontYaHei.Length, Scale(InfoSubFontSize), 0, 0, 0);
@@ -909,6 +1231,25 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             EmojiWindowNative.SetLabelFont(_lblGroupUrlCaption, _fontYaHei, _fontYaHei.Length, Scale(11), 1, 0, 0);
             EmojiWindowNative.SetLabelFont(_lblGroupStats, _fontYaHei, _fontYaHei.Length, Scale(11), 0, 0, 0);
             EmojiWindowNative.SetLabelFont(_lblGroupHint, _fontYaHei, _fontYaHei.Length, Scale(11), 0, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblProxyListTitle, _fontYaHei, _fontYaHei.Length, Scale(12), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblProxyEditorTitle, _fontYaHei, _fontYaHei.Length, Scale(12), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblProxyNameCaption, _fontYaHei, _fontYaHei.Length, Scale(11), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblProxyTypeCaption, _fontYaHei, _fontYaHei.Length, Scale(11), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblProxyHostCaption, _fontYaHei, _fontYaHei.Length, Scale(11), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblProxyPortCaption, _fontYaHei, _fontYaHei.Length, Scale(11), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblProxyUserCaption, _fontYaHei, _fontYaHei.Length, Scale(11), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblProxyPasswordCaption, _fontYaHei, _fontYaHei.Length, Scale(11), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblProxyHint, _fontYaHei, _fontYaHei.Length, Scale(11), 0, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblCommercialModuleTitle, _fontYaHei, _fontYaHei.Length, Scale(28), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblCommercialModuleSubtitle, _fontYaHei, _fontYaHei.Length, Scale(16), 0, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblCommercialModuleBadge, _fontSegoe, _fontSegoe.Length, Scale(13), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblCommercialModuleFeature1Title, _fontYaHei, _fontYaHei.Length, Scale(17), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblCommercialModuleFeature1, _fontYaHei, _fontYaHei.Length, Scale(14), 0, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblCommercialModuleFeature2Title, _fontYaHei, _fontYaHei.Length, Scale(17), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblCommercialModuleFeature2, _fontYaHei, _fontYaHei.Length, Scale(14), 0, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblCommercialModuleFeature3Title, _fontYaHei, _fontYaHei.Length, Scale(17), 1, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblCommercialModuleFeature3, _fontYaHei, _fontYaHei.Length, Scale(14), 0, 0, 0);
+            EmojiWindowNative.SetLabelFont(_lblCommercialModuleHint, _fontYaHei, _fontYaHei.Length, Scale(16), 0, 0, 0);
 
             foreach (EnvironmentRecord env in _environments.Values)
             {
@@ -937,17 +1278,35 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             PaintButton(_btnGroupSave, Argb(255, 37, 99, 235));
             PaintButton(_btnGroupAdd, Argb(255, 34, 197, 94));
             PaintButton(_btnGroupDelete, Argb(255, 239, 68, 68));
+            PaintButton(_btnProxySave, Argb(255, 37, 99, 235));
+            PaintButton(_btnProxyAdd, Argb(255, 34, 197, 94));
+            PaintButton(_btnProxyDelete, Argb(255, 239, 68, 68));
             EmojiWindowNative.SetButtonRound(_btnNewEnv, 0);
             EmojiWindowNative.SetButtonRound(_btnDeleteEnv, 0);
             EmojiWindowNative.SetButtonRound(_btnGroupSave, 1);
             EmojiWindowNative.SetButtonRound(_btnGroupAdd, 1);
             EmojiWindowNative.SetButtonRound(_btnGroupDelete, 1);
+            EmojiWindowNative.SetButtonRound(_btnProxySave, 1);
+            EmojiWindowNative.SetButtonRound(_btnProxyAdd, 1);
+            EmojiWindowNative.SetButtonRound(_btnProxyDelete, 1);
             SetButtonText(_btnTheme, dark ? "☀️" : "🌙");
             EmojiWindowNative.SetEditBoxColor(_editGroupName, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255));
             EmojiWindowNative.SetEditBoxColor(_editGroupUrl, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255));
             EmojiWindowNative.SetEditBoxFont(_editGroupName, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
             EmojiWindowNative.SetEditBoxFont(_editGroupUrl, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
             EmojiWindowNative.SetListBoxColors(_groupListBox, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255), accent, dark ? ShiftColor(leftBg, 8) : MixColor(accent, leftBg, 0.88f));
+            EmojiWindowNative.SetEditBoxColor(_editProxyName, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255));
+            EmojiWindowNative.SetEditBoxColor(_editProxyHost, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255));
+            EmojiWindowNative.SetEditBoxColor(_editProxyPort, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255));
+            EmojiWindowNative.SetEditBoxColor(_editProxyUser, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255));
+            EmojiWindowNative.SetEditBoxColor(_editProxyPassword, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255));
+            EmojiWindowNative.SetEditBoxFont(_editProxyName, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
+            EmojiWindowNative.SetEditBoxFont(_editProxyHost, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
+            EmojiWindowNative.SetEditBoxFont(_editProxyPort, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
+            EmojiWindowNative.SetEditBoxFont(_editProxyUser, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
+            EmojiWindowNative.SetEditBoxFont(_editProxyPassword, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
+            EmojiWindowNative.SetListBoxColors(_proxyListBox, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255), accent, dark ? ShiftColor(leftBg, 8) : MixColor(accent, leftBg, 0.88f));
+            // 注意：按钮样式单选框的颜色在创建时已固定，不需要在主题切换时修改
 
             for (int i = 0; i < _toolbarButtons.Count; i++)
             {
@@ -1043,6 +1402,8 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _browserCanvasWidth = Math.Max(Scale(240), rightWidth - Scale(32));
             _browserCanvasHeight = Math.Max(Scale(160), browserHeight - Scale(32));
             LayoutGroupManagementPage();
+            LayoutProxyManagementPage();
+            LayoutCommercialModulePage();
             foreach (EnvironmentRecord env in _environments.Values)
             {
                 LayoutEnvironmentHost(env);
@@ -1213,6 +1574,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             IFBroSharpBrowser existingBrowser = GetEnvironmentBrowser(env);
             if (existingBrowser != null && existingBrowser.IsValid)
             {
+                ApplyProxyToBrowser(env, existingBrowser, true);
                 env.BrowserState = 2;
                 env.Status = "运行中";
                 ApplyEnvironmentNodeColor(env.NodeId, env.Status);
@@ -1224,7 +1586,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             }
 
             EnsureBrowserDirectories(env);
-            env.BrowserEventHandler ??= new EnvironmentBrowserEvent(OnEnvironmentBrowserAddressChanged, OnEnvironmentBrowserTitleChanged, OnEnvironmentBrowserClosed);
+            env.BrowserEventHandler ??= new EnvironmentBrowserEvent(OnEnvironmentBrowserAddressChanged, OnEnvironmentBrowserTitleChanged, OnEnvironmentBrowserClosed, OnEnvironmentBrowserCreated);
 
             FBroSharpWindowsInfo windowInfo = new FBroSharpWindowsInfo
             {
@@ -1334,6 +1696,24 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                     SetEditText(env.AddressEdit, url);
                 }
 
+                break;
+            }
+        }
+
+        private void OnEnvironmentBrowserCreated(string browserFlag)
+        {
+            foreach (EnvironmentRecord env in _environments.Values)
+            {
+                if (env.BrowserFlag != browserFlag)
+                {
+                    continue;
+                }
+
+                IFBroSharpBrowser browser = GetEnvironmentBrowser(env);
+                if (browser != null && browser.IsValid)
+                {
+                    ApplyProxyToBrowser(env, browser, _currentEnvId == env.EnvId);
+                }
                 break;
             }
         }
@@ -1766,4 +2146,3 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         }
     }
 }
-
