@@ -179,6 +179,7 @@ namespace EmojiWindowDemo
         [DllImport(Dll, CallingConvention = Cc)] public static extern void ShowEmojiWindow(IntPtr hwnd, int visible);
         [DllImport(Dll, CallingConvention = Cc)] public static extern uint GetWindowTitlebarColor(IntPtr hwnd);
         [DllImport(Dll, CallingConvention = Cc)] public static extern int SetTitleBarTextColor(IntPtr hwnd, uint color);
+        [DllImport(Dll, CallingConvention = Cc)] public static extern int SetTitleBarFont(IntPtr hwnd, byte[] fontNameUtf8, int fontNameLen, float fontSize);
         [DllImport(Dll, CallingConvention = Cc)] public static extern uint GetTitleBarTextColor(IntPtr hwnd);
         [DllImport(Dll, CallingConvention = Cc)] public static extern void SetWindowBackgroundColor(IntPtr hwnd, uint color);
         [DllImport(Dll, CallingConvention = Cc)] public static extern void SetDarkMode(int darkMode);

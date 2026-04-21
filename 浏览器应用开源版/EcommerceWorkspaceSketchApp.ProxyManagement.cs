@@ -307,11 +307,10 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             int radioHttpWidth = Scale(100);
             int radioSocks5Width = Scale(120);
             int radioGap = Scale(10);
-            (int originX, int originY) = GetProxyManagementButtonOrigin();
             EmojiWindowNative.SetRadioButtonBounds(_radioHttp, -1000, -1000, radioHttpWidth, editHeight);
             EmojiWindowNative.SetRadioButtonBounds(_radioSocks5, -1000, -1000, radioSocks5Width, editHeight);
-            EmojiWindowNative.SetButtonBounds(_btnProxyTypeHttp, originX + editorX, originY + radioY, radioHttpWidth, editHeight);
-            EmojiWindowNative.SetButtonBounds(_btnProxyTypeSocks5, originX + editorX + radioHttpWidth + radioGap, originY + radioY, radioSocks5Width, editHeight);
+            EmojiWindowNative.SetButtonBounds(_btnProxyTypeHttp, editorX, radioY, radioHttpWidth, editHeight);
+            EmojiWindowNative.SetButtonBounds(_btnProxyTypeSocks5, editorX + radioHttpWidth + radioGap, radioY, radioSocks5Width, editHeight);
 
             // 主机地址标签和编辑框右移，避免与SOCKS5单选框重叠
             int radioTotalWidth = radioHttpWidth + radioGap + radioSocks5Width;
@@ -334,9 +333,9 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             EmojiWindowNative.SetLabelBounds(_lblProxyHint, editorX, outer + Scale(294), editorWidth, Scale(54));
 
             int buttonY = outer + Scale(364);
-            EmojiWindowNative.SetButtonBounds(_btnProxySave, originX + editorX, originY + buttonY, buttonWidth, buttonHeight);
-            EmojiWindowNative.SetButtonBounds(_btnProxyAdd, originX + editorX + buttonWidth + rowGap, originY + buttonY, buttonWidth, buttonHeight);
-            EmojiWindowNative.SetButtonBounds(_btnProxyDelete, originX + editorX + (buttonWidth + rowGap) * 2, originY + buttonY, buttonWidth, buttonHeight);
+            EmojiWindowNative.SetButtonBounds(_btnProxySave, editorX, buttonY, buttonWidth, buttonHeight);
+            EmojiWindowNative.SetButtonBounds(_btnProxyAdd, editorX + buttonWidth + rowGap, buttonY, buttonWidth, buttonHeight);
+            EmojiWindowNative.SetButtonBounds(_btnProxyDelete, editorX + (buttonWidth + rowGap) * 2, buttonY, buttonWidth, buttonHeight);
         }
 
         private void OnProxyListSelected(IntPtr hListBox, int index)
@@ -690,27 +689,6 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 var serializer = new DataContractJsonSerializer(typeof(PersistedProxyConfig));
                 serializer.WriteObject(stream, config);
             }
-        }
-
-        private (int X, int Y) GetProxyManagementButtonOrigin()
-        {
-            int x = 0;
-            int y = 0;
-            foreach (IntPtr hwnd in new[] { _workspacePanel, _browserPanel, _browserFrame, _browserCanvas, _proxyManagementPanel })
-            {
-                if (hwnd == IntPtr.Zero)
-                {
-                    continue;
-                }
-
-                if (EmojiWindowNative.GetWindowBounds(hwnd, out int partX, out int partY, out _, out _) == 0)
-                {
-                    x += partX;
-                    y += partY;
-                }
-            }
-
-            return (x, y);
         }
 
         private ProxyConfig ResolveProxyConfig(EnvironmentRecord env)

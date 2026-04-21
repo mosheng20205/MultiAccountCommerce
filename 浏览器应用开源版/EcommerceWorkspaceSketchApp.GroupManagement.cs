@@ -176,11 +176,10 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             EmojiWindowNative.SetLabelBounds(_lblGroupStats, editorX, outer + Scale(214), editorWidth, labelHeight);
             EmojiWindowNative.SetLabelBounds(_lblGroupHint, editorX, outer + Scale(244), editorWidth, Scale(44));
 
-            (int originX, int originY) = GetGroupManagementButtonOrigin();
             int buttonY = outer + Scale(308);
-            EmojiWindowNative.SetButtonBounds(_btnGroupSave, originX + editorX, originY + buttonY, buttonWidth, buttonHeight);
-            EmojiWindowNative.SetButtonBounds(_btnGroupAdd, originX + editorX + buttonWidth + rowGap, originY + buttonY, buttonWidth, buttonHeight);
-            EmojiWindowNative.SetButtonBounds(_btnGroupDelete, originX + editorX + (buttonWidth + rowGap) * 2, originY + buttonY, buttonWidth, buttonHeight);
+            EmojiWindowNative.SetButtonBounds(_btnGroupSave, editorX, buttonY, buttonWidth, buttonHeight);
+            EmojiWindowNative.SetButtonBounds(_btnGroupAdd, editorX + buttonWidth + rowGap, buttonY, buttonWidth, buttonHeight);
+            EmojiWindowNative.SetButtonBounds(_btnGroupDelete, editorX + (buttonWidth + rowGap) * 2, buttonY, buttonWidth, buttonHeight);
         }
 
         private void SaveGroupManagementChanges()
@@ -403,25 +402,5 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             }
         }
 
-        private (int X, int Y) GetGroupManagementButtonOrigin()
-        {
-            int x = 0;
-            int y = 0;
-            foreach (IntPtr hwnd in new[] { _workspacePanel, _browserPanel, _browserFrame, _browserCanvas, _groupManagementPanel })
-            {
-                if (hwnd == IntPtr.Zero)
-                {
-                    continue;
-                }
-
-                if (EmojiWindowNative.GetWindowBounds(hwnd, out int partX, out int partY, out _, out _) == 0)
-                {
-                    x += partX;
-                    y += partY;
-                }
-            }
-
-            return (x, y);
-        }
     }
 }
