@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Sockets;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
+using System.Text;
 using EmojiWindowDemo;
 using FBroSharp.Lib;
 
@@ -31,6 +34,21 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
             [DataMember(Order = 6)]
             public string Password { get; set; } = string.Empty;
+
+            [DataMember(Order = 7)]
+            public long LastUsedAtTicks { get; set; }
+
+            [DataMember(Order = 8)]
+            public long LastCheckAtTicks { get; set; }
+
+            [DataMember(Order = 9)]
+            public int LastLatencyMs { get; set; }
+
+            [DataMember(Order = 10)]
+            public string LastCheckStatus { get; set; } = string.Empty;
+
+            [DataMember(Order = 11)]
+            public string LastCheckMessage { get; set; } = string.Empty;
         }
 
         [DataContract]
@@ -40,8 +58,28 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             public List<ProxyConfig> Proxies { get; set; } = new List<ProxyConfig>();
         }
 
-        private static readonly string[] ProxyTypeItems = { "HTTP", "SOCKS5" };
+        private sealed class ProxyTestResult
+        {
+            public bool Success { get; set; }
+            public int LatencyMs { get; set; }
+            public string Status { get; set; } = string.Empty;
+            public string Message { get; set; } = string.Empty;
+        }
+
+        private const string DirectProxyOption = "__DIRECT__";
         private const int ProxyTypeRadioStyleButton = 2;
+        private const int ProxyConnectTimeoutMs = 5000;
+
+        private readonly List<string> _proxyFilteredOrder = new List<string>();
+        private IntPtr _lblProxySearchCaption;
+        private IntPtr _lblProxyQuickImportCaption;
+        private IntPtr _lblProxyListStats;
+        private IntPtr _editProxySearch;
+        private IntPtr _editProxyQuickImport;
+        private int _btnProxyFilter;
+        private int _btnProxyParse;
+        private int _btnProxyTest;
+        private Action _pendingConfirmAction;
 
         private void InitializeProxyCatalog()
         {
@@ -82,7 +120,11 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
             if (_proxyOrder.Count == 0)
             {
-                ProxyConfig defaultConfig = new ProxyConfig { Name = "默认代理", Type = "HTTP" };
+                ProxyConfig defaultConfig = new ProxyConfig
+                {
+                    Name = "默认代理",
+                    Type = "HTTP",
+                };
                 _proxyConfigs[defaultConfig.Name] = defaultConfig;
                 _proxyOrder.Add(defaultConfig.Name);
             }
@@ -94,6 +136,9 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         {
             _proxyManagementPanel = EmojiWindowNative.CreatePanel(_browserCanvas, 0, 0, 100, 100, Argb(255, 249, 251, 253));
             _lblProxyListTitle = Label(_proxyManagementPanel, "代理列表", 14, true);
+            _lblProxyListStats = Label(_proxyManagementPanel, string.Empty, 11, false);
+            _lblProxySearchCaption = Label(_proxyManagementPanel, "搜索代理", 11, true);
+            _lblProxyQuickImportCaption = Label(_proxyManagementPanel, "快速导入", 11, true);
             _lblProxyEditorTitle = Label(_proxyManagementPanel, "代理设置", 14, true);
             _lblProxyNameCaption = Label(_proxyManagementPanel, "代理名称", 12, true);
             _lblProxyTypeCaption = Label(_proxyManagementPanel, "代理类型", 12, true);
@@ -101,43 +146,42 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _lblProxyPortCaption = Label(_proxyManagementPanel, "端口", 12, true);
             _lblProxyUserCaption = Label(_proxyManagementPanel, "用户名", 12, true);
             _lblProxyPasswordCaption = Label(_proxyManagementPanel, "密码", 12, true);
-            _lblProxyHint = Label(_proxyManagementPanel, "开源版支持：HTTP、HTTP(带账号密码)、SOCKS5(无认证)。不支持带账号密码的 SOCKS5。", 12, false);
+            _lblProxyHint = Label(_proxyManagementPanel, "开源版支持 HTTP、HTTP 账号密码代理，以及无认证 SOCKS5。", 12, false);
 
+            _editProxySearch = EditBox(_proxyManagementPanel, string.Empty, false);
+            _editProxyQuickImport = EditBox(_proxyManagementPanel, string.Empty, false);
             _editProxyName = EditBox(_proxyManagementPanel, string.Empty, false);
             _editProxyHost = EditBox(_proxyManagementPanel, string.Empty, false);
             _editProxyPort = EditBox(_proxyManagementPanel, string.Empty, false);
             _editProxyUser = EditBox(_proxyManagementPanel, string.Empty, false);
             _editProxyPassword = EditBox(_proxyManagementPanel, string.Empty, false);
 
+            EmojiWindowNative.SetEditBoxKeyCallback(_editProxySearch, _proxyEditKeyCallback);
+            EmojiWindowNative.SetEditBoxKeyCallback(_editProxyQuickImport, _proxyEditKeyCallback);
+
             _proxyListBox = EmojiWindowNative.CreateListBox(_proxyManagementPanel, 0, 0, 100, 100, 0, Argb(255, 31, 41, 55), Argb(255, 255, 255, 255));
             EmojiWindowNative.SetListBoxCallback(_proxyListBox, _proxyListCallback);
 
-            // 创建单选框替代组合框，使用按钮样式
-            // 注意：按钮样式需要颜色反转 - 前景色用于文字，背景色用于按钮背景
             byte[] httpText = U("HTTP");
             byte[] socks5Text = U("SOCKS5");
-            uint btnFg = Argb(255, 255, 255, 255);  // 白色文字
-            uint btnBg = Argb(255, 64, 158, 255);   // 蓝色背景
             _radioHttp = EmojiWindowNative.CreateRadioButton(_proxyManagementPanel, 0, 0, Scale(104), Scale(32), httpText, httpText.Length, 1, 1, ProxyTypeSelectedTextColor(), ProxyTypeSelectedBackColor(), _fontSegoe, _fontSegoe.Length, 12, 1, 0, 0);
             _radioSocks5 = EmojiWindowNative.CreateRadioButton(_proxyManagementPanel, 0, 0, Scale(124), Scale(32), socks5Text, socks5Text.Length, 1, 0, ProxyTypeNormalTextColor(), ProxyTypeNormalBackColor(), _fontSegoe, _fontSegoe.Length, 12, 1, 0, 0);
-
-            // 设置为按钮样式 (RADIO_STYLE_BUTTON = 2)
             EmojiWindowNative.SetRadioButtonStyle(_radioHttp, ProxyTypeRadioStyleButton);
             EmojiWindowNative.SetRadioButtonStyle(_radioSocks5, ProxyTypeRadioStyleButton);
             EmojiWindowNative.SetRadioButtonCallback(_radioHttp, _proxyRadioCallback);
             EmojiWindowNative.SetRadioButtonCallback(_radioSocks5, _proxyRadioCallback);
-            RefreshProxyTypeRadioStyle();
-
-            Console.WriteLine($"Created radio buttons: HTTP={_radioHttp}, SOCKS5={_radioSocks5}");
 
             _btnProxyTypeHttp = Button(_proxyManagementPanel, "HTTP", ProxyTypeSelectedBackColor(), () => SelectProxyType("HTTP"));
             _btnProxyTypeSocks5 = Button(_proxyManagementPanel, "SOCKS5", ProxyTypeNormalBackColor(), () => SelectProxyType("SOCKS5"));
-            RefreshProxyTypeRadioStyle();
-
+            _btnProxyFilter = Button(_proxyManagementPanel, "筛选", Argb(255, 8, 145, 178), ApplyProxyListFilter);
+            _btnProxyParse = Button(_proxyManagementPanel, "解析", Argb(255, 14, 116, 144), ParseQuickImportIntoEditor);
             _btnProxySave = Button(_proxyManagementPanel, "保存修改", Argb(255, 37, 99, 235), OnSaveProxyConfig);
             _btnProxyAdd = Button(_proxyManagementPanel, "新增代理", Argb(255, 34, 197, 94), OnAddProxy);
             _btnProxyDelete = Button(_proxyManagementPanel, "删除代理", Argb(255, 239, 68, 68), OnDeleteProxy);
+            _btnProxyTest = Button(_proxyManagementPanel, "测试代理", Argb(255, 124, 58, 237), TestProxyFromEditor);
 
+            RefreshProxyTypeRadioStyle();
+            UpdateProxyTypeHint();
             SetProxyManagementVisible(false);
         }
 
@@ -147,7 +191,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             RefreshProxyListItems();
             BindProxyEditorState(_selectedManagedProxyName);
             SetLabelText(_lblInfoMain, "当前模块：代理管理");
-            SetLabelText(_lblInfoSub, "右侧可维护代理配置。开源版支持 HTTP、HTTP 认证、无认证 SOCKS5。");
+            SetLabelText(_lblInfoSub, "左侧维护代理池，右侧支持搜索、快速导入、测试和编辑。");
             SetWindowTitle("电商多账号浏览器 - 代理管理");
         }
 
@@ -161,8 +205,9 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
             foreach (IntPtr label in new[]
             {
-                _lblProxyListTitle, _lblProxyEditorTitle, _lblProxyNameCaption, _lblProxyTypeCaption,
-                _lblProxyHostCaption, _lblProxyPortCaption, _lblProxyUserCaption, _lblProxyPasswordCaption, _lblProxyHint
+                _lblProxyListTitle, _lblProxyListStats, _lblProxySearchCaption, _lblProxyQuickImportCaption,
+                _lblProxyEditorTitle, _lblProxyNameCaption, _lblProxyTypeCaption, _lblProxyHostCaption,
+                _lblProxyPortCaption, _lblProxyUserCaption, _lblProxyPasswordCaption, _lblProxyHint
             })
             {
                 if (label != IntPtr.Zero)
@@ -171,7 +216,11 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 }
             }
 
-            foreach (IntPtr edit in new[] { _editProxyName, _editProxyHost, _editProxyPort, _editProxyUser, _editProxyPassword })
+            foreach (IntPtr edit in new[]
+            {
+                _editProxySearch, _editProxyQuickImport, _editProxyName, _editProxyHost,
+                _editProxyPort, _editProxyUser, _editProxyPassword
+            })
             {
                 if (edit != IntPtr.Zero)
                 {
@@ -183,16 +232,22 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             {
                 EmojiWindowNative.ShowListBox(_proxyListBox, visible ? 1 : 0);
             }
+
             if (_radioHttp != IntPtr.Zero)
             {
                 EmojiWindowNative.ShowRadioButton(_radioHttp, 0);
             }
+
             if (_radioSocks5 != IntPtr.Zero)
             {
                 EmojiWindowNative.ShowRadioButton(_radioSocks5, 0);
             }
 
-            foreach (int buttonId in new[] { _btnProxyTypeHttp, _btnProxyTypeSocks5, _btnProxySave, _btnProxyAdd, _btnProxyDelete })
+            foreach (int buttonId in new[]
+            {
+                _btnProxyTypeHttp, _btnProxyTypeSocks5, _btnProxyFilter, _btnProxyParse,
+                _btnProxySave, _btnProxyAdd, _btnProxyDelete, _btnProxyTest
+            })
             {
                 if (buttonId != 0)
                 {
@@ -218,18 +273,22 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 return;
             }
 
+            _proxyFilteredOrder.Clear();
+            _proxyFilteredOrder.AddRange(GetProxyManagementFilteredOrder());
+
             for (int i = EmojiWindowNative.GetListItemCount(_proxyListBox) - 1; i >= 0; i--)
             {
                 EmojiWindowNative.RemoveListItem(_proxyListBox, i);
             }
 
             int selectedIndex = -1;
-            for (int i = 0; i < _proxyOrder.Count; i++)
+            for (int i = 0; i < _proxyFilteredOrder.Count; i++)
             {
-                string proxyName = _proxyOrder[i];
-                byte[] textBytes = U(proxyName);
+                string proxyName = _proxyFilteredOrder[i];
+                string text = DescribeProxyListItem(proxyName);
+                byte[] textBytes = U(text);
                 EmojiWindowNative.AddListItem(_proxyListBox, textBytes, textBytes.Length);
-                if (proxyName == _selectedManagedProxyName)
+                if (string.Equals(proxyName, _selectedManagedProxyName, StringComparison.OrdinalIgnoreCase))
                 {
                     selectedIndex = i;
                 }
@@ -238,6 +297,35 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             if (selectedIndex >= 0)
             {
                 EmojiWindowNative.SetSelectedIndex(_proxyListBox, selectedIndex);
+            }
+
+            if (_lblProxyListStats != IntPtr.Zero)
+            {
+                SetLabelText(_lblProxyListStats, $"共 {_proxyFilteredOrder.Count} 个代理，已维护 {_proxyOrder.Count} 个。");
+            }
+        }
+
+        private IEnumerable<string> GetProxyManagementFilteredOrder()
+        {
+            string keyword = (_editProxySearch != IntPtr.Zero ? GetEditText(_editProxySearch) : string.Empty).Trim();
+            foreach (string proxyName in _proxyOrder)
+            {
+                if (!_proxyConfigs.TryGetValue(proxyName, out ProxyConfig config))
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(keyword))
+                {
+                    yield return proxyName;
+                    continue;
+                }
+
+                string haystack = $"{config.Name} {config.Type} {config.Host} {config.Port} {config.User}".ToLowerInvariant();
+                if (haystack.Contains(keyword.ToLowerInvariant()))
+                {
+                    yield return proxyName;
+                }
             }
         }
 
@@ -253,7 +341,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 EmojiWindowNative.SetRadioButtonState(_radioHttp, 1);
                 EmojiWindowNative.SetRadioButtonState(_radioSocks5, 0);
                 RefreshProxyTypeRadioStyle();
-                SetLabelText(_lblProxyHint, "当前没有可编辑的代理。");
+                UpdateProxyTypeHint();
                 return;
             }
 
@@ -263,7 +351,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             SetEditText(_editProxyPort, config.Port > 0 ? config.Port.ToString() : string.Empty);
             SetEditText(_editProxyUser, config.User);
             SetEditText(_editProxyPassword, config.Password);
-            bool isSocks5 = config.Type == "SOCKS5";
+            bool isSocks5 = string.Equals(config.Type, "SOCKS5", StringComparison.OrdinalIgnoreCase);
             EmojiWindowNative.SetRadioButtonState(_radioHttp, isSocks5 ? 0 : 1);
             EmojiWindowNative.SetRadioButtonState(_radioSocks5, isSocks5 ? 1 : 0);
             RefreshProxyTypeRadioStyle();
@@ -280,30 +368,34 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             Move(_proxyManagementPanel, 0, 0, _browserCanvasWidth, _browserCanvasHeight);
 
             int outer = Scale(24);
-            int listWidth = Math.Max(Scale(260), Math.Min(Scale(360), _browserCanvasWidth / 3));
             int gap = Scale(28);
+            int listWidth = Math.Max(Scale(300), Math.Min(Scale(380), _browserCanvasWidth / 3));
+            int editorX = outer + listWidth + gap;
+            int editorWidth = Math.Max(Scale(420), _browserCanvasWidth - editorX - outer);
             int titleHeight = Scale(28);
             int labelHeight = Scale(24);
             int editHeight = Scale(38);
-            int smallWidth = Scale(140);
-            int editorX = outer + listWidth + gap;
-            int editorWidth = Math.Max(Scale(360), _browserCanvasWidth - editorX - outer);
-            int listTop = outer + titleHeight + Scale(12);
-            int listHeight = Math.Max(Scale(260), _browserCanvasHeight - listTop - outer);
             int rowGap = Scale(12);
             int buttonHeight = Scale(40);
             int buttonWidth = Scale(116);
 
-            EmojiWindowNative.SetLabelBounds(_lblProxyListTitle, outer, outer, listWidth, titleHeight);
-            EmojiWindowNative.SetListBoxBounds(_proxyListBox, outer, listTop, listWidth, listHeight);
+            EmojiWindowNative.SetLabelBounds(_lblProxyListTitle, outer, outer, listWidth - Scale(90), titleHeight);
+            EmojiWindowNative.SetLabelBounds(_lblProxyListStats, outer, outer + Scale(28), listWidth, Scale(20));
+            EmojiWindowNative.SetLabelBounds(_lblProxySearchCaption, outer, outer + Scale(58), listWidth, Scale(22));
+            EmojiWindowNative.SetEditBoxBounds(_editProxySearch, outer, outer + Scale(84), listWidth - Scale(96), editHeight);
+            EmojiWindowNative.SetButtonBounds(_btnProxyFilter, outer + listWidth - Scale(84), outer + Scale(84), Scale(84), editHeight);
+            EmojiWindowNative.SetListBoxBounds(_proxyListBox, outer, outer + Scale(136), listWidth, Math.Max(Scale(260), _browserCanvasHeight - outer - Scale(160)));
 
             EmojiWindowNative.SetLabelBounds(_lblProxyEditorTitle, editorX, outer, editorWidth, titleHeight);
-            EmojiWindowNative.SetLabelBounds(_lblProxyNameCaption, editorX, outer + Scale(44), editorWidth, labelHeight);
-            EmojiWindowNative.SetEditBoxBounds(_editProxyName, editorX, outer + Scale(72), editorWidth, editHeight);
+            EmojiWindowNative.SetLabelBounds(_lblProxyQuickImportCaption, editorX, outer + Scale(38), editorWidth, labelHeight);
+            EmojiWindowNative.SetEditBoxBounds(_editProxyQuickImport, editorX, outer + Scale(64), editorWidth - Scale(94), editHeight);
+            EmojiWindowNative.SetButtonBounds(_btnProxyParse, editorX + editorWidth - Scale(82), outer + Scale(64), Scale(82), editHeight);
 
-            EmojiWindowNative.SetLabelBounds(_lblProxyTypeCaption, editorX, outer + Scale(126), smallWidth, labelHeight);
-            // 单选框水平排列
-            int radioY = outer + Scale(154);
+            EmojiWindowNative.SetLabelBounds(_lblProxyNameCaption, editorX, outer + Scale(118), editorWidth, labelHeight);
+            EmojiWindowNative.SetEditBoxBounds(_editProxyName, editorX, outer + Scale(144), editorWidth, editHeight);
+
+            EmojiWindowNative.SetLabelBounds(_lblProxyTypeCaption, editorX, outer + Scale(198), Scale(140), labelHeight);
+            int radioY = outer + Scale(226);
             int radioHttpWidth = Scale(100);
             int radioSocks5Width = Scale(120);
             int radioGap = Scale(10);
@@ -312,40 +404,41 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             EmojiWindowNative.SetButtonBounds(_btnProxyTypeHttp, editorX, radioY, radioHttpWidth, editHeight);
             EmojiWindowNative.SetButtonBounds(_btnProxyTypeSocks5, editorX + radioHttpWidth + radioGap, radioY, radioSocks5Width, editHeight);
 
-            // 主机地址标签和编辑框右移，避免与SOCKS5单选框重叠
-            int radioTotalWidth = radioHttpWidth + radioGap + radioSocks5Width;
-            int hostX = editorX + radioTotalWidth + rowGap;
-            int hostWidth = editorWidth - radioTotalWidth - rowGap;
-            EmojiWindowNative.SetLabelBounds(_lblProxyHostCaption, hostX, outer + Scale(126), hostWidth, labelHeight);
-            EmojiWindowNative.SetEditBoxBounds(_editProxyHost, hostX, outer + Scale(154), hostWidth, editHeight);
+            int hostX = editorX + radioHttpWidth + radioSocks5Width + radioGap + rowGap;
+            int hostWidth = editorWidth - (hostX - editorX);
+            EmojiWindowNative.SetLabelBounds(_lblProxyHostCaption, hostX, outer + Scale(198), hostWidth, labelHeight);
+            EmojiWindowNative.SetEditBoxBounds(_editProxyHost, hostX, outer + Scale(226), hostWidth, editHeight);
 
-            EmojiWindowNative.SetLabelBounds(_lblProxyPortCaption, editorX, outer + Scale(208), smallWidth, labelHeight);
-            EmojiWindowNative.SetEditBoxBounds(_editProxyPort, editorX, outer + Scale(236), smallWidth, editHeight);
+            EmojiWindowNative.SetLabelBounds(_lblProxyPortCaption, editorX, outer + Scale(280), Scale(120), labelHeight);
+            EmojiWindowNative.SetEditBoxBounds(_editProxyPort, editorX, outer + Scale(306), Scale(120), editHeight);
 
-            EmojiWindowNative.SetLabelBounds(_lblProxyUserCaption, editorX + smallWidth + rowGap, outer + Scale(208), (editorWidth - smallWidth - rowGap) / 2 - rowGap / 2, labelHeight);
-            EmojiWindowNative.SetEditBoxBounds(_editProxyUser, editorX + smallWidth + rowGap, outer + Scale(236), (editorWidth - smallWidth - rowGap) / 2 - rowGap / 2, editHeight);
-
-            int passwordX = editorX + smallWidth + rowGap + ((editorWidth - smallWidth - rowGap) / 2);
+            int credsX = editorX + Scale(132);
+            int credsWidth = editorWidth - Scale(132);
+            int userWidth = Math.Max(Scale(160), (credsWidth - rowGap) / 2);
+            int passwordX = credsX + userWidth + rowGap;
             int passwordWidth = editorWidth - (passwordX - editorX);
-            EmojiWindowNative.SetLabelBounds(_lblProxyPasswordCaption, passwordX, outer + Scale(208), passwordWidth, labelHeight);
-            EmojiWindowNative.SetEditBoxBounds(_editProxyPassword, passwordX, outer + Scale(236), passwordWidth, editHeight);
+            EmojiWindowNative.SetLabelBounds(_lblProxyUserCaption, credsX, outer + Scale(280), userWidth, labelHeight);
+            EmojiWindowNative.SetEditBoxBounds(_editProxyUser, credsX, outer + Scale(306), userWidth, editHeight);
+            EmojiWindowNative.SetLabelBounds(_lblProxyPasswordCaption, passwordX, outer + Scale(280), passwordWidth, labelHeight);
+            EmojiWindowNative.SetEditBoxBounds(_editProxyPassword, passwordX, outer + Scale(306), passwordWidth, editHeight);
 
-            EmojiWindowNative.SetLabelBounds(_lblProxyHint, editorX, outer + Scale(294), editorWidth, Scale(54));
+            EmojiWindowNative.SetLabelBounds(_lblProxyHint, editorX, outer + Scale(360), editorWidth, Scale(54));
 
-            int buttonY = outer + Scale(364);
+            int buttonY = outer + Scale(432);
             EmojiWindowNative.SetButtonBounds(_btnProxySave, editorX, buttonY, buttonWidth, buttonHeight);
             EmojiWindowNative.SetButtonBounds(_btnProxyAdd, editorX + buttonWidth + rowGap, buttonY, buttonWidth, buttonHeight);
             EmojiWindowNative.SetButtonBounds(_btnProxyDelete, editorX + (buttonWidth + rowGap) * 2, buttonY, buttonWidth, buttonHeight);
+            EmojiWindowNative.SetButtonBounds(_btnProxyTest, editorX + (buttonWidth + rowGap) * 3, buttonY, buttonWidth, buttonHeight);
         }
 
         private void OnProxyListSelected(IntPtr hListBox, int index)
         {
-            if (index < 0 || index >= _proxyOrder.Count)
+            if (index < 0 || index >= _proxyFilteredOrder.Count)
             {
                 return;
             }
 
-            _selectedManagedProxyName = _proxyOrder[index];
+            _selectedManagedProxyName = _proxyFilteredOrder[index];
             BindProxyEditorState(_selectedManagedProxyName);
         }
 
@@ -447,14 +540,24 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
         private void UpdateProxyTypeHint()
         {
-            string type = SelectedProxyType();
-            if (type == "SOCKS5")
+            bool isSocks5 = string.Equals(SelectedProxyType(), "SOCKS5", StringComparison.OrdinalIgnoreCase);
+            if (_editProxyUser != IntPtr.Zero)
             {
-                SetLabelText(_lblProxyHint, "SOCKS5 仅支持无认证代理。请留空用户名和密码。");
+                EmojiWindowNative.EnableEditBox(_editProxyUser, isSocks5 ? 0 : 1);
+            }
+
+            if (_editProxyPassword != IntPtr.Zero)
+            {
+                EmojiWindowNative.EnableEditBox(_editProxyPassword, isSocks5 ? 0 : 1);
+            }
+
+            if (isSocks5)
+            {
+                SetLabelText(_lblProxyHint, "SOCKS5 在开源版仅支持无认证代理。用户名和密码会被忽略。");
                 return;
             }
 
-            SetLabelText(_lblProxyHint, "HTTP 代理支持无认证或带账号密码认证。");
+            SetLabelText(_lblProxyHint, "HTTP 代理支持无认证或账号密码认证。可先测试，再保存到代理池。");
         }
 
         private string SelectedProxyType()
@@ -499,6 +602,13 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 return;
             }
 
+            ProxyConfig existing = _proxyConfigs[oldName];
+            updated.LastUsedAtTicks = existing.LastUsedAtTicks;
+            updated.LastCheckAtTicks = existing.LastCheckAtTicks;
+            updated.LastLatencyMs = existing.LastLatencyMs;
+            updated.LastCheckStatus = existing.LastCheckStatus;
+            updated.LastCheckMessage = existing.LastCheckMessage;
+
             if (!string.Equals(oldName, updated.Name, StringComparison.OrdinalIgnoreCase))
             {
                 int index = _proxyOrder.IndexOf(oldName);
@@ -515,6 +625,11 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                         env.Proxy = updated.Name;
                     }
                 }
+
+                if (string.Equals(_quickProxySelectionName, oldName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _quickProxySelectionName = updated.Name;
+                }
             }
 
             _proxyConfigs[updated.Name] = updated;
@@ -522,7 +637,9 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             SaveProxyConfiguration();
             BindProxyEditorState(updated.Name);
             RefreshProxyListItems();
+            RefreshQuickProxyPanelForCurrentEnvironment();
             SetLabelText(_lblInfoSub, $"代理 {updated.Name} 已保存。");
+
             if (_currentEnvId.HasValue && _environments.TryGetValue(_currentEnvId.Value, out EnvironmentRecord currentEnv))
             {
                 RenderEnvironment(currentEnv);
@@ -546,9 +663,11 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _proxyConfigs[config.Name] = config;
             _proxyOrder.Add(config.Name);
             _selectedManagedProxyName = config.Name;
+            TouchProxyUsage(config.Name, saveImmediately: false);
             SaveProxyConfiguration();
             RefreshProxyListItems();
             BindProxyEditorState(config.Name);
+            RefreshQuickProxyPanelForCurrentEnvironment();
             SetLabelText(_lblInfoSub, $"已新增代理 {config.Name}。");
         }
 
@@ -560,29 +679,48 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 return;
             }
 
-            int usageCount = 0;
-            foreach (EnvironmentRecord env in _environments.Values)
-            {
-                if (string.Equals(env.Proxy, _selectedManagedProxyName, StringComparison.OrdinalIgnoreCase))
-                {
-                    usageCount++;
-                }
-            }
+            List<string> usages = _environments.Values
+                .Where(env => string.Equals(env.Proxy, _selectedManagedProxyName, StringComparison.OrdinalIgnoreCase))
+                .Select(env => $"{env.GroupName} / {env.Name}")
+                .OrderBy(item => item, StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
-            if (usageCount > 0)
+            if (usages.Count > 0)
             {
-                SetLabelText(_lblInfoSub, $"代理 {_selectedManagedProxyName} 仍被 {usageCount} 个环境使用，不能删除。");
+                ShowMessageBox(
+                    "无法删除代理",
+                    $"代理 {_selectedManagedProxyName} 仍被 {usages.Count} 个环境使用：\n{string.Join("\n", usages.Take(8))}{(usages.Count > 8 ? "\n..." : string.Empty)}");
+                SetLabelText(_lblInfoSub, $"代理 {_selectedManagedProxyName} 仍被 {usages.Count} 个环境使用，无法删除。");
                 return;
             }
 
             string deletingName = _selectedManagedProxyName;
-            _proxyConfigs.Remove(deletingName);
-            _proxyOrder.Remove(deletingName);
+            ShowConfirmBox(
+                "删除代理",
+                $"确定要删除代理 {deletingName} 吗？删除后将从代理池移除。",
+                () => PerformDeleteManagedProxy(deletingName));
+        }
+
+        private void PerformDeleteManagedProxy(string proxyName)
+        {
+            if (string.IsNullOrWhiteSpace(proxyName) || !_proxyConfigs.ContainsKey(proxyName))
+            {
+                return;
+            }
+
+            _proxyConfigs.Remove(proxyName);
+            _proxyOrder.Remove(proxyName);
+            if (string.Equals(_quickProxySelectionName, proxyName, StringComparison.OrdinalIgnoreCase))
+            {
+                _quickProxySelectionName = string.Empty;
+            }
+
             _selectedManagedProxyName = _proxyOrder.Count > 0 ? _proxyOrder[0] : string.Empty;
             SaveProxyConfiguration();
             RefreshProxyListItems();
             BindProxyEditorState(_selectedManagedProxyName);
-            SetLabelText(_lblInfoSub, $"已删除代理 {deletingName}。");
+            RefreshQuickProxyPanelForCurrentEnvironment();
+            SetLabelText(_lblInfoSub, $"已删除代理 {proxyName}。");
         }
 
         private bool TryBuildProxyFromEditor(out ProxyConfig config, out string error)
@@ -628,7 +766,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 Host = host,
                 Port = port,
                 User = user,
-                Password = password
+                Password = password,
             };
             return true;
         }
@@ -642,7 +780,12 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 Host = config?.Host?.Trim() ?? string.Empty,
                 Port = config?.Port ?? 0,
                 User = config?.User?.Trim() ?? string.Empty,
-                Password = config?.Password?.Trim() ?? string.Empty
+                Password = config?.Password?.Trim() ?? string.Empty,
+                LastUsedAtTicks = config?.LastUsedAtTicks ?? 0,
+                LastCheckAtTicks = config?.LastCheckAtTicks ?? 0,
+                LastLatencyMs = config?.LastLatencyMs ?? 0,
+                LastCheckStatus = config?.LastCheckStatus?.Trim() ?? string.Empty,
+                LastCheckMessage = config?.LastCheckMessage?.Trim() ?? string.Empty,
             };
         }
 
@@ -703,9 +846,29 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
         private bool ApplyProxyToBrowser(EnvironmentRecord env, IFBroSharpBrowser browser, bool updateStatus)
         {
-            ProxyConfig config = ResolveProxyConfig(env);
-            if (config == null || string.IsNullOrWhiteSpace(config.Host) || config.Port <= 0)
+            if (env == null || browser == null || !browser.IsValid)
             {
+                return false;
+            }
+
+            ProxyConfig config = ResolveProxyConfig(env);
+            if (config == null)
+            {
+                env.ProxyStatus = "直连";
+                if (updateStatus)
+                {
+                    SetLabelText(_lblInfoSub, $"{FormatEnvironmentProxySummary(env)}   已切换为直连");
+                }
+                return true;
+            }
+
+            if (string.IsNullOrWhiteSpace(config.Host) || config.Port <= 0)
+            {
+                env.ProxyStatus = "配置不完整";
+                if (updateStatus)
+                {
+                    SetLabelText(_lblInfoSub, $"{FormatEnvironmentProxySummary(env)}   代理配置不完整，当前仍为直连");
+                }
                 return true;
             }
 
@@ -723,11 +886,455 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 browser.SetProxy(proxyUrl);
             }
 
+            env.ProxyStatus = "已应用";
+            TouchProxyUsage(config.Name, saveImmediately: false);
+            SaveProxyConfiguration();
+
             if (updateStatus)
             {
-                SetLabelText(_lblInfoSub, $"域名：{env.Domain}   代理：{env.Proxy}   已应用代理：{proxyUrl}");
+                SetLabelText(_lblInfoSub, $"{FormatEnvironmentProxySummary(env)}   已应用代理：{proxyUrl}");
             }
             return true;
+        }
+
+        private string CurrentProxyDisplayName(EnvironmentRecord env)
+        {
+            return env == null || string.IsNullOrWhiteSpace(env.Proxy) ? "未设置" : env.Proxy;
+        }
+
+        private string FormatEnvironmentProxySummary(EnvironmentRecord env)
+        {
+            if (env == null)
+            {
+                return string.Empty;
+            }
+
+            string status = string.IsNullOrWhiteSpace(env.ProxyStatus)
+                ? (string.IsNullOrWhiteSpace(env.Proxy) ? "直连（待启动）" : "待启动")
+                : env.ProxyStatus;
+            return $"域名：{env.Domain}   当前代理：{CurrentProxyDisplayName(env)}   代理状态：{status}";
+        }
+
+        private void UpdateProxyToolbarButtonText(EnvironmentRecord env)
+        {
+            if (_toolbarButtons.Count <= 5)
+            {
+                return;
+            }
+
+            string proxyName = CurrentProxyDisplayName(env);
+            if (proxyName.Length > 16)
+            {
+                proxyName = proxyName.Substring(0, 16) + "...";
+            }
+
+            SetButtonText(_toolbarButtons[5], $"代理设置: {proxyName}");
+        }
+
+        private string DescribeProxyListItem(string proxyName)
+        {
+            if (!_proxyConfigs.TryGetValue(proxyName, out ProxyConfig config))
+            {
+                return proxyName;
+            }
+
+            string endpoint = string.IsNullOrWhiteSpace(config.Host) || config.Port <= 0 ? "未配置" : $"{config.Host}:{config.Port}";
+            string check = string.IsNullOrWhiteSpace(config.LastCheckStatus) ? "未测试" : config.LastCheckStatus;
+            return $"{config.Name}   {config.Type}   {endpoint}   {check}";
+        }
+
+        private string DescribeProxyPickerItem(string proxyName)
+        {
+            if (IsDirectProxyOption(proxyName))
+            {
+                return "不使用代理（直连）";
+            }
+
+            if (!_proxyConfigs.TryGetValue(proxyName, out ProxyConfig config))
+            {
+                return proxyName;
+            }
+
+            string endpoint = string.IsNullOrWhiteSpace(config.Host) || config.Port <= 0 ? "未配置" : $"{config.Host}:{config.Port}";
+            return $"{config.Name}   {config.Type}   {endpoint}";
+        }
+
+        private bool IsDirectProxyOption(string proxyName)
+        {
+            return string.Equals(proxyName, DirectProxyOption, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void ApplyProxyListFilter()
+        {
+            RefreshProxyListItems();
+        }
+
+        private void ParseQuickImportIntoEditor()
+        {
+            string raw = GetEditText(_editProxyQuickImport).Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                SetLabelText(_lblInfoSub, "请先粘贴代理字符串，再点击解析。");
+                return;
+            }
+
+            if (!TryParseProxyInput(raw, out ProxyConfig config, out string error))
+            {
+                SetLabelText(_lblInfoSub, error);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(GetEditText(_editProxyName)))
+            {
+                string autoName = $"{config.Type}-{config.Host}:{config.Port}";
+                SetEditText(_editProxyName, autoName);
+            }
+
+            SetEditText(_editProxyHost, config.Host);
+            SetEditText(_editProxyPort, config.Port.ToString());
+            SetEditText(_editProxyUser, config.User);
+            SetEditText(_editProxyPassword, config.Password);
+            SelectProxyType(config.Type);
+            SetLabelText(_lblInfoSub, $"已解析代理：{config.Type} {config.Host}:{config.Port}");
+        }
+
+        private bool TryParseProxyInput(string raw, out ProxyConfig config, out string error)
+        {
+            config = null;
+            error = string.Empty;
+
+            string value = raw.Trim();
+            string type = "HTTP";
+            string host = string.Empty;
+            int port = 0;
+            string user = string.Empty;
+            string password = string.Empty;
+
+            if (Uri.TryCreate(value, UriKind.Absolute, out Uri uri) && !string.IsNullOrWhiteSpace(uri.Host))
+            {
+                type = string.Equals(uri.Scheme, "socks5", StringComparison.OrdinalIgnoreCase) ? "SOCKS5" : "HTTP";
+                host = uri.Host;
+                port = uri.Port;
+                if (!string.IsNullOrWhiteSpace(uri.UserInfo))
+                {
+                    string[] userInfo = uri.UserInfo.Split(new[] { ':' }, 2);
+                    user = Uri.UnescapeDataString(userInfo[0]);
+                    if (userInfo.Length > 1)
+                    {
+                        password = Uri.UnescapeDataString(userInfo[1]);
+                    }
+                }
+            }
+            else
+            {
+                string[] parts = value.Split(':');
+                if (parts.Length == 2 || parts.Length == 4)
+                {
+                    host = parts[0].Trim();
+                    int.TryParse(parts[1].Trim(), out port);
+                    if (parts.Length == 4)
+                    {
+                        user = parts[2].Trim();
+                        password = parts[3].Trim();
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(host) || port <= 0 || port > 65535)
+            {
+                error = "无法解析代理。支持 host:port、host:port:user:pass、http://user:pass@host:port、socks5://host:port。";
+                return false;
+            }
+
+            if (type == "SOCKS5" && (!string.IsNullOrWhiteSpace(user) || !string.IsNullOrWhiteSpace(password)))
+            {
+                error = "开源版不支持带账号密码的 SOCKS5 代理。";
+                return false;
+            }
+
+            config = new ProxyConfig
+            {
+                Type = type,
+                Host = host,
+                Port = port,
+                User = user,
+                Password = password,
+            };
+            return true;
+        }
+
+        private void TestProxyFromEditor()
+        {
+            if (!TryBuildProxyFromEditor(out ProxyConfig config, out string error))
+            {
+                SetLabelText(_lblInfoSub, error);
+                return;
+            }
+
+            ProxyTestResult result = TestProxyConfiguration(config);
+            if (_proxyConfigs.TryGetValue(config.Name, out ProxyConfig stored))
+            {
+                stored.LastCheckAtTicks = DateTime.UtcNow.Ticks;
+                stored.LastLatencyMs = result.LatencyMs;
+                stored.LastCheckStatus = result.Status;
+                stored.LastCheckMessage = result.Message;
+                SaveProxyConfiguration();
+                RefreshProxyListItems();
+                RefreshQuickProxyPanelForCurrentEnvironment();
+            }
+
+            SetLabelText(_lblInfoSub, $"{config.Name}   测试结果：{result.Status}   {result.Message}");
+        }
+
+        private ProxyTestResult TestProxyConfiguration(ProxyConfig config)
+        {
+            if (config == null)
+            {
+                return new ProxyTestResult
+                {
+                    Success = false,
+                    Status = "测试失败",
+                    Message = "代理配置为空。",
+                };
+            }
+
+            ProxyTestResult result = string.Equals(config.Type, "SOCKS5", StringComparison.OrdinalIgnoreCase)
+                ? TestSocks5Proxy(config)
+                : TestHttpProxy(config);
+            result.Status = result.Success ? "连通成功" : "连通失败";
+            return result;
+        }
+
+        private ProxyTestResult TestHttpProxy(ProxyConfig config)
+        {
+            Stopwatch watch = Stopwatch.StartNew();
+            try
+            {
+                using (TcpClient client = new TcpClient())
+                {
+                    if (!client.ConnectAsync(config.Host, config.Port).Wait(ProxyConnectTimeoutMs))
+                    {
+                        return new ProxyTestResult
+                        {
+                            Success = false,
+                            LatencyMs = ProxyConnectTimeoutMs,
+                            Message = "连接代理服务器超时。",
+                        };
+                    }
+
+                    client.ReceiveTimeout = ProxyConnectTimeoutMs;
+                    client.SendTimeout = ProxyConnectTimeoutMs;
+                    using (NetworkStream stream = client.GetStream())
+                    {
+                        StringBuilder builder = new StringBuilder();
+                        builder.Append("CONNECT 1.1.1.1:80 HTTP/1.1\r\n");
+                        builder.Append("Host: 1.1.1.1:80\r\n");
+                        builder.Append("Proxy-Connection: Keep-Alive\r\n");
+                        if (!string.IsNullOrWhiteSpace(config.User) || !string.IsNullOrWhiteSpace(config.Password))
+                        {
+                            string auth = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{config.User}:{config.Password}"));
+                            builder.Append($"Proxy-Authorization: Basic {auth}\r\n");
+                        }
+                        builder.Append("\r\n");
+
+                        byte[] payload = Encoding.ASCII.GetBytes(builder.ToString());
+                        stream.Write(payload, 0, payload.Length);
+
+                        byte[] buffer = new byte[512];
+                        int read = stream.Read(buffer, 0, buffer.Length);
+                        string response = read > 0 ? Encoding.ASCII.GetString(buffer, 0, read) : string.Empty;
+                        watch.Stop();
+
+                        if (response.Contains("200"))
+                        {
+                            return new ProxyTestResult
+                            {
+                                Success = true,
+                                LatencyMs = (int)watch.ElapsedMilliseconds,
+                                Message = $"HTTP CONNECT 成功，延迟 {watch.ElapsedMilliseconds}ms。",
+                            };
+                        }
+
+                        if (response.Contains("407"))
+                        {
+                            return new ProxyTestResult
+                            {
+                                Success = false,
+                                LatencyMs = (int)watch.ElapsedMilliseconds,
+                                Message = "代理认证失败，请检查用户名或密码。",
+                            };
+                        }
+
+                        return new ProxyTestResult
+                        {
+                            Success = false,
+                            LatencyMs = (int)watch.ElapsedMilliseconds,
+                            Message = string.IsNullOrWhiteSpace(response) ? "未收到有效响应。" : $"代理响应异常：{response.Split('\n')[0].Trim()}",
+                        };
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                watch.Stop();
+                return new ProxyTestResult
+                {
+                    Success = false,
+                    LatencyMs = (int)watch.ElapsedMilliseconds,
+                    Message = $"连接异常：{ex.Message}",
+                };
+            }
+        }
+
+        private ProxyTestResult TestSocks5Proxy(ProxyConfig config)
+        {
+            Stopwatch watch = Stopwatch.StartNew();
+            try
+            {
+                using (TcpClient client = new TcpClient())
+                {
+                    if (!client.ConnectAsync(config.Host, config.Port).Wait(ProxyConnectTimeoutMs))
+                    {
+                        return new ProxyTestResult
+                        {
+                            Success = false,
+                            LatencyMs = ProxyConnectTimeoutMs,
+                            Message = "连接代理服务器超时。",
+                        };
+                    }
+
+                    client.ReceiveTimeout = ProxyConnectTimeoutMs;
+                    client.SendTimeout = ProxyConnectTimeoutMs;
+                    using (NetworkStream stream = client.GetStream())
+                    {
+                        byte[] hello = { 0x05, 0x01, 0x00 };
+                        stream.Write(hello, 0, hello.Length);
+
+                        byte[] response = new byte[2];
+                        ReadExact(stream, response, response.Length);
+                        if (response[0] != 0x05 || response[1] != 0x00)
+                        {
+                            watch.Stop();
+                            return new ProxyTestResult
+                            {
+                                Success = false,
+                                LatencyMs = (int)watch.ElapsedMilliseconds,
+                                Message = "SOCKS5 握手失败或代理要求认证。",
+                            };
+                        }
+
+                        byte[] connect = { 0x05, 0x01, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x50 };
+                        stream.Write(connect, 0, connect.Length);
+
+                        byte[] head = new byte[4];
+                        ReadExact(stream, head, head.Length);
+                        if (head[1] != 0x00)
+                        {
+                            watch.Stop();
+                            return new ProxyTestResult
+                            {
+                                Success = false,
+                                LatencyMs = (int)watch.ElapsedMilliseconds,
+                                Message = $"SOCKS5 CONNECT 被拒绝，错误码 {head[1]}。",
+                            };
+                        }
+
+                        int addressLength = head[3] switch
+                        {
+                            0x01 => 4,
+                            0x04 => 16,
+                            0x03 => stream.ReadByte(),
+                            _ => 0
+                        };
+                        if (addressLength > 0)
+                        {
+                            byte[] tail = new byte[addressLength + 2];
+                            ReadExact(stream, tail, tail.Length);
+                        }
+
+                        watch.Stop();
+                        return new ProxyTestResult
+                        {
+                            Success = true,
+                            LatencyMs = (int)watch.ElapsedMilliseconds,
+                            Message = $"SOCKS5 握手成功，延迟 {watch.ElapsedMilliseconds}ms。",
+                        };
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                watch.Stop();
+                return new ProxyTestResult
+                {
+                    Success = false,
+                    LatencyMs = (int)watch.ElapsedMilliseconds,
+                    Message = $"连接异常：{ex.Message}",
+                };
+            }
+        }
+
+        private void ReadExact(NetworkStream stream, byte[] buffer, int count)
+        {
+            int offset = 0;
+            while (offset < count)
+            {
+                int read = stream.Read(buffer, offset, count - offset);
+                if (read <= 0)
+                {
+                    throw new IOException("代理连接被中断。");
+                }
+                offset += read;
+            }
+        }
+
+        private void TouchProxyUsage(string proxyName, bool saveImmediately = true)
+        {
+            if (string.IsNullOrWhiteSpace(proxyName) || !_proxyConfigs.TryGetValue(proxyName, out ProxyConfig config))
+            {
+                return;
+            }
+
+            config.LastUsedAtTicks = DateTime.UtcNow.Ticks;
+            if (saveImmediately)
+            {
+                SaveProxyConfiguration();
+            }
+        }
+
+        private IEnumerable<string> GetRecentProxyNames(int count)
+        {
+            return _proxyConfigs.Values
+                .Where(config => !string.IsNullOrWhiteSpace(config.Name))
+                .OrderByDescending(config => config.LastUsedAtTicks)
+                .ThenBy(config => config.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(config => config.Name)
+                .Take(count);
+        }
+
+        private void ShowMessageBox(string title, string message)
+        {
+            byte[] titleBytes = U(title);
+            byte[] messageBytes = U(message);
+            EmojiWindowNative.show_message_box_bytes(_window, titleBytes, titleBytes.Length, messageBytes, messageBytes.Length, Array.Empty<byte>(), 0);
+        }
+
+        private void ShowConfirmBox(string title, string message, Action onConfirmed)
+        {
+            _pendingConfirmAction = onConfirmed;
+            byte[] titleBytes = U(title);
+            byte[] messageBytes = U(message);
+            EmojiWindowNative.show_confirm_box_bytes(_window, titleBytes, titleBytes.Length, messageBytes, messageBytes.Length, Array.Empty<byte>(), 0, _confirmBoxCallback);
+        }
+
+        private void OnConfirmBoxClosed(int confirmed)
+        {
+            Action action = _pendingConfirmAction;
+            _pendingConfirmAction = null;
+            if (confirmed == 1)
+            {
+                action?.Invoke();
+            }
         }
     }
 }

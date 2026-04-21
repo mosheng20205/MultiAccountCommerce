@@ -27,6 +27,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             public string CachePath { get; set; } = string.Empty;
             public string BrowserFlag { get; set; } = string.Empty;
             public string CookiePath { get; set; } = string.Empty;
+            public string ProxyStatus { get; set; } = string.Empty;
             public IntPtr HostPanel { get; set; }
             public IntPtr AddressPanel { get; set; }
             public IntPtr AddressEdit { get; set; }
@@ -79,6 +80,10 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             private const uint RdwUpdateNow = 0x0100;
             private const int SmCxScreen = 0;
             private const int SmCyScreen = 1;
+            private static readonly IntPtr HwndTop = IntPtr.Zero;
+            private const uint SwpNoMove = 0x0002;
+            private const uint SwpNoSize = 0x0001;
+            private const uint SwpShowWindow = 0x0040;
 
             [StructLayout(LayoutKind.Sequential)]
             public struct Rect
@@ -112,6 +117,10 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             [DllImport("user32.dll", SetLastError = true)]
             [return: MarshalAs(UnmanagedType.Bool)]
             public static extern bool DestroyWindow(IntPtr hwnd);
+
+            [DllImport("user32.dll", SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool SetWindowPos(IntPtr hwnd, IntPtr hwndInsertAfter, int x, int y, int cx, int cy, uint flags);
 
             [DllImport("user32.dll")]
             public static extern uint GetDpiForWindow(IntPtr hwnd);
@@ -161,6 +170,17 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 }
 
                 RedrawWindow(hwnd, IntPtr.Zero, IntPtr.Zero, RdwInvalidate | RdwErase | RdwFrame | RdwAllChildren | RdwUpdateNow);
+            }
+
+            public static void BringToTop(IntPtr hwnd)
+            {
+                if (hwnd == IntPtr.Zero)
+                {
+                    return;
+                }
+
+                SetWindowPos(hwnd, HwndTop, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
+                RefreshWindow(hwnd);
             }
         }
 
@@ -219,7 +239,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private readonly Dictionary<int, int> _nodeToEnvId = new Dictionary<int, int>();
         private readonly Dictionary<IntPtr, int> _editToEnvId = new Dictionary<IntPtr, int>();
         private readonly List<int> _toolbarButtons = new List<int>();
-        private readonly int[] _toolbarWidths = { 92, 72, 72, 86, 96, 88, 88 };
+        private readonly int[] _toolbarWidths = { 92, 72, 72, 86, 96, 156, 88 };
         private readonly uint[] _toolbarColors =
         {
             Argb(255, 34, 197, 94),
@@ -263,10 +283,15 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private readonly EmojiWindowNative.TreeNodeCallback _treeNodeCallback;
         private readonly EmojiWindowNative.WindowResizeCallback _windowResizeCallback;
         private readonly EmojiWindowNative.EditBoxKeyCallback _editKeyCallback;
+        private readonly EmojiWindowNative.EditBoxKeyCallback _proxyEditKeyCallback;
         private readonly EmojiWindowNative.ListBoxCallback _groupListCallback;
         private readonly EmojiWindowNative.ListBoxCallback _proxyListCallback;
+        private readonly EmojiWindowNative.ListBoxCallback _quickRecentListCallback;
+        private readonly EmojiWindowNative.ListBoxCallback _quickAllListCallback;
         private readonly EmojiWindowNative.ComboBoxCallback _proxyTypeCallback;
         private readonly EmojiWindowNative.RadioButtonCallback _proxyRadioCallback;
+        private readonly EmojiWindowNative.MessageBoxCallback _confirmBoxCallback;
+        private readonly EmojiWindowNative.MenuItemClickCallback _proxyMenuBarCallback;
 
         private IntPtr _window;
         private IntPtr _leftPanel;
@@ -365,10 +390,15 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _treeNodeCallback = OnTreeSelected;
             _windowResizeCallback = OnResize;
             _editKeyCallback = OnAddressKey;
+            _proxyEditKeyCallback = OnProxyEditorKey;
             _groupListCallback = OnGroupListSelected;
             _proxyListCallback = OnProxyListSelected;
+            _quickRecentListCallback = OnQuickRecentProxySelected;
+            _quickAllListCallback = OnQuickAllProxySelected;
             _proxyTypeCallback = OnProxyTypeChanged;
             _proxyRadioCallback = OnProxyTypeRadioChanged;
+            _confirmBoxCallback = OnConfirmBoxClosed;
+            _proxyMenuBarCallback = OnProxyMenuItemClick;
         }
 
         private void RefreshDpiScale()
@@ -493,6 +523,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _lblInfoSub = Label(_infoPanel, string.Empty, InfoSubFontSize, false);
             CreateGroupManagementControls();
             CreateProxyManagementControls();
+            CreateProxyQuickPanelControls();
             CreateCommercialModuleControls();
             CreateSystemSettingsControls();
 
@@ -500,7 +531,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _btnDeleteEnv = Button(_leftPanel, "删除环境", Argb(255, 239, 68, 68), OnDeleteEnvironment);
             _btnTheme = Button(_leftPanel, "🌓", Argb(255, 245, 158, 11), ToggleTheme);
 
-            string[] toolbarTexts = { "启动浏览器", "停止", "刷新", "打开后台", "同步Cookie", "切换代理", "更多操作" };
+            string[] toolbarTexts = { "启动浏览器", "停止", "刷新", "打开后台", "同步Cookie", "代理设置", "更多操作" };
             Action[] toolbarActions =
             {
                 OnStartBrowser,
@@ -536,6 +567,11 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private void CreateProxyManagementControls()
         {
             InitializeProxyManagementUi();
+        }
+
+        private void CreateProxyQuickPanelControls()
+        {
+            InitializeQuickProxyUi();
         }
 
         private void CreateCommercialModuleControls()
@@ -735,6 +771,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 CachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache", $"env_{envId}"),
                 BrowserFlag = $"env_{envId}",
                 CookiePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cookies", $"env_{envId}.json"),
+                ProxyStatus = string.IsNullOrWhiteSpace(proxy) ? "直连（待启动）" : "待启动",
             };
 
             _environments[envId] = env;
@@ -814,6 +851,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             using (new RedrawScope(_window))
             {
                 _currentNodeId = nodeId;
+                SetQuickProxyVisible(false);
                 bool showGroupManagement = meta.Kind == "module" && meta.Key == "分组管理";
                 bool showProxyManagement = meta.Kind == "module" && meta.Key == "代理管理";
                 bool showSystemSettings = meta.Kind == "module" && meta.Key == "系统设置";
@@ -871,11 +909,13 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private void RenderEnvironment(EnvironmentRecord env)
         {
             SetLabelText(_lblInfoMain, $"当前环境：{env.Name}   分组：{env.GroupName}   状态：{env.Status}   评分：{env.Score}分");
-            SetLabelText(_lblInfoSub, $"域名：{env.Domain}   代理：{env.Proxy}");
+            SetLabelText(_lblInfoSub, FormatEnvironmentProxySummary(env));
             if (env.AddressEdit != IntPtr.Zero)
             {
                 SetEditText(env.AddressEdit, EnvironmentUrlText(env));
             }
+            UpdateProxyToolbarButtonText(env);
+            RefreshQuickProxyPanelForCurrentEnvironment();
             SetWindowTitle($"电商多账号浏览器 - {env.Name}");
         }
 
@@ -1140,21 +1180,12 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             EnvironmentRecord env = CurrentEnvironment();
             if (env == null)
             {
-                SetLabelText(_lblInfoSub, "当前不是环境页面，无法切换代理。");
+                SetLabelText(_lblInfoSub, "当前不是环境页面，无法打开代理设置。");
                 return;
             }
 
-            if (_proxyOrder.Count == 0)
-            {
-                SetLabelText(_lblInfoSub, "当前没有可用代理，请先在代理管理中新增代理。");
-                return;
-            }
-
-            int currentIndex = _proxyOrder.FindIndex(item => string.Equals(item, env.Proxy, StringComparison.OrdinalIgnoreCase));
-            int nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % _proxyOrder.Count;
-            env.Proxy = _proxyOrder[nextIndex];
-            RenderEnvironment(env);
-            SetLabelText(_lblInfoSub, $"域名：{env.Domain}   代理：{env.Proxy}   状态：已切换代理配置");
+            SetLabelText(_lblInfoSub, $"{FormatEnvironmentProxySummary(env)}   正在打开代理菜单栏");
+            ToggleQuickProxyPanel();
         }
 
         private void ToggleTheme()
@@ -1342,6 +1373,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             EmojiWindowNative.SetEditBoxFont(_editProxyUser, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
             EmojiWindowNative.SetEditBoxFont(_editProxyPassword, _fontSegoe, _fontSegoe.Length, Scale(EditFontSize), 0, 0, 0);
             EmojiWindowNative.SetListBoxColors(_proxyListBox, text, dark ? Argb(255, 26, 30, 36) : Argb(255, 255, 255, 255), accent, dark ? ShiftColor(leftBg, 8) : MixColor(accent, leftBg, 0.88f));
+            ApplyProxyUiTheme(dark, text, muted, canvasBg, panelBg, accent, leftBg);
             // 注意：按钮样式单选框的颜色在创建时已固定，不需要在主题切换时修改
 
             for (int i = 0; i < _toolbarButtons.Count; i++)
@@ -1439,6 +1471,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _browserCanvasHeight = Math.Max(Scale(160), browserHeight - Scale(32));
             LayoutGroupManagementPage();
             LayoutProxyManagementPage();
+            LayoutQuickProxyPanel();
             LayoutSystemSettingsPage();
             LayoutCommercialModulePage();
             foreach (EnvironmentRecord env in _environments.Values)
@@ -1495,6 +1528,10 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             for (int i = 0; i < _toolbarButtons.Count; i++)
             {
                 int width = Scale(_toolbarWidths[i]);
+                if (i == 5)
+                {
+                    width = Math.Max(width, EstimateToolbarButtonWidth(_toolbarButtons[i]));
+                }
                 EmojiWindowNative.SetButtonBounds(_toolbarButtons[i], x, Scale(7), width, Scale(34));
                 EmojiWindowNative.ShowButton(_toolbarButtons[i], 1);
                 x += width + Scale(8);
@@ -1868,6 +1905,11 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
         private void CloseEnvironmentBrowser(EnvironmentRecord env)
         {
+            if (_currentEnvId == env.EnvId)
+            {
+                SetQuickProxyVisible(false);
+            }
+
             IFBroSharpBrowser browser = GetEnvironmentBrowser(env);
             if (browser != null && browser.IsValid)
             {
@@ -1877,6 +1919,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             env.BrowserState = 5;
             env.KeepAlive = false;
             env.Status = "待启动";
+            env.ProxyStatus = string.IsNullOrWhiteSpace(env.Proxy) ? "直连（待启动）" : "待启动";
             env.Visible = false;
             ApplyEnvironmentNodeColor(env.NodeId, env.Status);
 
@@ -2105,6 +2148,17 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private string GetEditText(IntPtr edit)
         {
             return EmojiWindowNative.ReadUtf8(EmojiWindowNative.GetEditBoxText, edit);
+        }
+
+        private int EstimateToolbarButtonWidth(int buttonId)
+        {
+            string text = EmojiWindowNative.ReadUtf8(EmojiWindowNative.GetButtonText, buttonId);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return Scale(120);
+            }
+
+            return Math.Max(Scale(120), Scale(28 + text.Length * 10));
         }
 
         private void SetWindowTitle(string title)
