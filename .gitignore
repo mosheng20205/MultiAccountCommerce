@@ -1,6 +1,7 @@
 ﻿# Visual Studio
 .vs/
 *.suo
+.codex/
 
 # C# build outputs
 Csharp/bin/
@@ -27,3 +28,13 @@ Python/logs/*
 # OS files
 Thumbs.db
 Desktop.ini
+/RadioButtonTest
+/.dotnet-cli/.dotnet
+/ComboBoxTest
+/Csharp/packages
+*.bak
+/E/电商多账号浏览器UI.md
+/Python/cache
+/Python/cookies
+/Python/logs
+/浏览器应用开源版/.claude
