@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import ctypes
 import struct
+import sys
+import time
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 
+from cef_env_host import BrowserEventSink, CefEnvHostManager, format_runtime_error_message
 
 HWND = wintypes.HWND
 UINT32 = wintypes.UINT
@@ -22,8 +25,11 @@ RDW_FRAME = 0x0400
 RDW_UPDATENOW = 0x0100
 CALLBACK_NODE_SELECTED = 1
 VK_RETURN = 13
+MB_ICONERROR = 0x10
 
 USER32 = ctypes.windll.user32
+USER32.GetFocus.argtypes = []
+USER32.GetFocus.restype = HWND
 
 WINDOW_WIDTH = 1480
 WINDOW_HEIGHT = 920
@@ -142,6 +148,15 @@ class EnvironmentRecord:
     visible: bool = False
     last_url: str = ""
     last_title: str = ""
+    cef_created: bool = False
+    cef_visible: bool = False
+    cef_closing: bool = False
+    last_real_url: str = ""
+    last_real_title: str = ""
+    last_loading: bool = False
+    proxy_config: dict[str, object] | None = None
+    last_activated_at: float = 0.0
+    last_error: str = ""
 
 
 class RedrawScope:
@@ -190,6 +205,8 @@ class NativeApi:
             UINT32,
         ]
         dll.create_window_bytes_ex.restype = HWND
+        dll.SetWindowBounds.argtypes = [HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        dll.SetWindowBounds.restype = None
         dll.ShowEmojiWindow.argtypes = [HWND, ctypes.c_int]
         dll.set_message_loop_main_window.argtypes = [HWND]
         dll.run_message_loop.argtypes = []
@@ -328,7 +345,7 @@ class NativeApi:
         dll.SetNodeForeColor.restype = BOOL
 
 
-class EnvironmentWorkspaceSketchApp:
+class EnvironmentWorkspaceSketchApp(BrowserEventSink):
     GROUP_SEED = {
         "Amazon 店群": [
             ("美区-环境01", "amazon.com", "US-Proxy-01", "运行中", 92),
@@ -356,6 +373,11 @@ class EnvironmentWorkspaceSketchApp:
         self.dll = self.native.dll
         self.width = WINDOW_WIDTH
         self.height = WINDOW_HEIGHT
+        self.base_dir = Path(__file__).resolve().parent
+        self.cache_root = self.base_dir / "cache"
+        self.cookie_root = self.base_dir / "cookies"
+        self.log_root = self.base_dir / "logs"
+        self.browser_host = CefEnvHostManager(event_sink=self, base_dir=self.base_dir)
 
         self.button_actions: dict[int, callable] = {}
         self.node_meta: dict[int, dict[str, object]] = {}
@@ -402,6 +424,7 @@ class EnvironmentWorkspaceSketchApp:
         self._edit_key_cb = self.native.EditBoxKeyCallback(self.on_address_key)
 
     def run(self) -> None:
+        self.ensure_runtime_dirs()
         self.create_window()
         with RedrawScope(self.window):
             self.create_controls()
@@ -411,8 +434,15 @@ class EnvironmentWorkspaceSketchApp:
         self.dll.set_button_click_callback(self._button_click_cb)
         self.dll.SetWindowResizeCallback(self._window_resize_cb)
         self.dll.ShowEmojiWindow(self.window, 1)
+        self.browser_host.initialize(self.hwnd_value(self.window))
         self.dll.set_message_loop_main_window(self.window)
-        self.dll.run_message_loop()
+        try:
+            self.dll.run_message_loop()
+        finally:
+            try:
+                self.browser_host.close_all()
+            finally:
+                self.browser_host.shutdown()
 
     def create_window(self) -> None:
         title_ptr, title_len, title_keep = utf8_buffer("电商多账号浏览器 - 草图版")
@@ -534,10 +564,13 @@ class EnvironmentWorkspaceSketchApp:
             status=status,
             score=score,
             start_url=self.default_start_url(domain),
-            cache_path=str(Path(__file__).resolve().parent / "cache" / f"env_{env_id}"),
+            cache_path=str(self.cache_root / f"env_{env_id}"),
             browser_flag=f"env_{env_id}",
-            cookie_path=str(Path(__file__).resolve().parent / "cookies" / f"env_{env_id}.json"),
+            cookie_path=str(self.cookie_root / f"env_{env_id}.json"),
+            proxy_config={"label": proxy, "mode": "prototype"},
         )
+        Path(record.cache_path).mkdir(parents=True, exist_ok=True)
+        Path(record.cookie_path).parent.mkdir(parents=True, exist_ok=True)
         self.environments[env_id] = record
         self.node_to_env_id[node_id] = env_id
         self.node_meta[node_id]["env_id"] = env_id
@@ -571,7 +604,8 @@ class EnvironmentWorkspaceSketchApp:
             self.layout()
 
     def on_address_key(self, h_edit: HWND, key_code: int, key_down: int, shift: int, ctrl: int, alt: int) -> None:
-        if key_down != 1 or key_code != VK_RETURN:
+        enter_pressed = (key_code == VK_RETURN and key_down != 0) or (key_down == VK_RETURN)
+        if not enter_pressed:
             return
         edit_handle = int(ctypes.cast(h_edit, ctypes.c_void_p).value or 0)
         env_id = self.edit_to_env_id.get(edit_handle)
@@ -583,6 +617,7 @@ class EnvironmentWorkspaceSketchApp:
         url = self.get_edit_text(h_edit).strip()
         if not url:
             return
+        self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   状态：正在导航到 {url}")
         self.navigate_environment(env, url)
 
     def activate_node(self, node_id: int) -> None:
@@ -598,24 +633,28 @@ class EnvironmentWorkspaceSketchApp:
         self.current_env_id = None
         if kind == "group":
             self.toolbar_visible = False
-            self.hide_visible_environment()
+            self.hide_visible_environment(preserve_browser=True)
             self.render_group(meta["key"])
             return
         if kind == "module":
             self.toolbar_visible = False
-            self.hide_visible_environment()
+            self.hide_visible_environment(preserve_browser=True)
             self.render_module(meta["key"])
             return
         self.toolbar_visible = False
-        self.hide_visible_environment()
+        self.hide_visible_environment(preserve_browser=True)
         self.render_switch_root()
 
     def render_environment(self, env: EnvironmentRecord) -> None:
-        info_main = f"当前环境：{env.name}   分组：{env.group_name}   状态：{env.status}   评分：{env.score}分"
-        info_sub = f"域名：{env.domain}   代理：{env.proxy}"
+        browser_state = "加载中" if env.last_loading else self.browser_state_text(env)
+        title = env.last_real_title or env.last_title or env.name
+        info_main = f"当前环境：{env.name}   分组：{env.group_name}   状态：{env.status}   浏览器：{browser_state}   标题：{title}"
+        info_sub = f"域名：{env.domain}   代理：{env.proxy}   当前网址：{self.environment_url_text(env)}"
+        if env.last_error:
+            info_sub = f"{info_sub}   提示：{env.last_error}"
         self.set_label_text(self.lbl_info_main, info_main)
         self.set_label_text(self.lbl_info_sub, info_sub)
-        if env.address_edit:
+        if env.address_edit and not self.address_edit_has_focus(env):
             self.set_edit_text(env.address_edit, self.environment_url_text(env))
         self.set_window_title(f"电商多账号浏览器 - {env.name}")
 
@@ -695,13 +734,22 @@ class EnvironmentWorkspaceSketchApp:
             self.set_label_text(self.lbl_info_sub, "当前不是环境页面，无法启动浏览器。")
             return
         self.ensure_environment_host(env)
-        env.browser_state = 2
-        env.status = "运行中"
-        env.keep_alive = False
-        env.last_url = env.start_url
-        env.last_title = env.name
-        self.apply_environment_node_color(env.node_id, env.status)
-        self.render_environment(env)
+        try:
+            self.browser_host.ensure_browser(
+                env.env_id,
+                self.hwnd_value(env.browser_view),
+                env.start_url,
+                env.cache_path,
+                env.cookie_path,
+                env.browser_flag,
+                proxy_config=env.proxy_config,
+            )
+        except Exception as exc:
+            self.set_environment_error(env, str(exc))
+        else:
+            self.apply_snapshot(env)
+            self.show_environment(env)
+            self.render_environment(env)
 
     def on_stop_browser(self) -> None:
         env = self.current_environment()
@@ -716,13 +764,25 @@ class EnvironmentWorkspaceSketchApp:
         if env is None:
             self.set_label_text(self.lbl_info_sub, "当前不是环境页面，工具栏操作未执行。")
             return
-        if env.browser_state not in {2, 3}:
-            self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   状态：浏览器尚未启动")
-            return
-        env.last_url = env.start_url
-        if env.address_edit:
-            self.set_edit_text(env.address_edit, self.environment_url_text(env))
-        self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   状态：已刷新独立工作区")
+        self.ensure_environment_host(env)
+        try:
+            if self.browser_host.has_browser(env.env_id):
+                self.browser_host.reload(env.env_id)
+            else:
+                self.browser_host.ensure_browser(
+                    env.env_id,
+                    self.hwnd_value(env.browser_view),
+                    env.start_url,
+                    env.cache_path,
+                    env.cookie_path,
+                    env.browser_flag,
+                    proxy_config=env.proxy_config,
+                )
+            self.apply_snapshot(env)
+        except Exception as exc:
+            self.set_environment_error(env, str(exc))
+        else:
+            self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   状态：已刷新独立工作区")
 
     def on_open_background(self) -> None:
         env = self.current_environment()
@@ -730,10 +790,12 @@ class EnvironmentWorkspaceSketchApp:
             self.set_label_text(self.lbl_info_sub, "当前不是环境页面，无法设置后台保活。")
             return
         env.keep_alive = True
-        if env.browser_state == 2:
+        env.last_error = ""
+        if env.browser_state in {2, 3}:
             env.status = "后台中"
         self.apply_environment_node_color(env.node_id, env.status)
         self.render_environment(env)
+        self.enforce_keep_alive_limit(exempt_env_id=env.env_id)
         self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   状态：已设置后台保活")
 
     def on_sync_cookie(self) -> None:
@@ -741,7 +803,13 @@ class EnvironmentWorkspaceSketchApp:
         if env is None:
             self.set_label_text(self.lbl_info_sub, "当前不是环境页面，无法同步 Cookie。")
             return
-        self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   Cookie：{env.cookie_path}")
+        try:
+            output = self.browser_host.export_cookies(env.env_id, env.cookie_path)
+        except Exception as exc:
+            self.set_environment_error(env, f"Cookie 导出失败：{exc}")
+        else:
+            env.last_error = ""
+            self.set_label_text(self.lbl_info_sub, f"域名：{env.domain}   代理：{env.proxy}   Cookie 已导出：{output}")
 
     def on_switch_proxy(self) -> None:
         env = self.current_environment()
@@ -749,6 +817,8 @@ class EnvironmentWorkspaceSketchApp:
             self.set_label_text(self.lbl_info_sub, "当前不是环境页面，无法切换代理。")
             return
         env.proxy = f"{env.proxy}-ALT"
+        env.proxy_config = {"label": env.proxy, "mode": "prototype"}
+        env.last_error = "代理配置已更新，重启当前环境浏览器后生效。"
         self.render_environment(env)
 
     def toggle_theme(self) -> None:
@@ -920,24 +990,31 @@ class EnvironmentWorkspaceSketchApp:
     def switch_to_environment(self, env_id: int) -> None:
         env = self.environments[env_id]
         self.current_env_id = env_id
+        env.last_activated_at = time.time()
         if self.current_visible_env_id != env_id:
-            self.hide_visible_environment()
+            self.hide_visible_environment(preserve_browser=True)
             self.ensure_environment_host(env)
             self.show_environment(env)
             self.current_visible_env_id = env_id
+        self.enforce_keep_alive_limit(exempt_env_id=env.env_id)
         self.render_environment(env)
 
-    def hide_visible_environment(self) -> None:
+    def hide_visible_environment(self, preserve_browser: bool) -> None:
         if self.current_visible_env_id is None:
             return
         env = self.environments.get(self.current_visible_env_id)
         if env and env.host_panel:
             self.show_panel(env.host_panel, False)
             env.visible = False
-            if env.browser_state == 2 and env.keep_alive:
-                env.browser_state = 3
-                env.status = "后台中"
-                self.apply_environment_node_color(env.node_id, env.status)
+            if self.browser_host.has_browser(env.env_id):
+                self.browser_host.hide(env.env_id)
+                env.cef_visible = False
+                if preserve_browser or env.keep_alive:
+                    env.browser_state = 3
+                    env.status = "后台中"
+                    self.apply_environment_node_color(env.node_id, env.status)
+                else:
+                    self.close_environment_browser(env)
         self.current_visible_env_id = None
 
     def ensure_environment_host(self, env: EnvironmentRecord) -> None:
@@ -962,16 +1039,32 @@ class EnvironmentWorkspaceSketchApp:
         self.ensure_environment_host(env)
         self.show_panel(env.host_panel, True)
         env.visible = True
-        if env.browser_state == 3:
+        env.last_activated_at = time.time()
+        if self.browser_host.has_browser(env.env_id):
+            self.browser_host.show(env.env_id)
+            env.cef_visible = True
+            env.cef_created = True
             env.browser_state = 2
             env.status = "运行中"
             self.apply_environment_node_color(env.node_id, env.status)
+            self.layout_environment_host(env)
 
     def close_environment_browser(self, env: EnvironmentRecord) -> None:
-        env.browser_state = 5
+        if self.browser_host.has_browser(env.env_id):
+            try:
+                self.browser_host.close(env.env_id)
+            except Exception as exc:
+                self.set_environment_error(env, str(exc))
+                return
+        env.cef_created = False
+        env.cef_visible = False
+        env.cef_closing = False
         env.keep_alive = False
+        env.browser_state = 5
         env.status = "待启动"
         env.visible = False
+        env.last_loading = False
+        env.last_error = ""
         self.apply_environment_node_color(env.node_id, env.status)
         if env.host_panel:
             self.show_panel(env.host_panel, False)
@@ -979,6 +1072,7 @@ class EnvironmentWorkspaceSketchApp:
             self.current_visible_env_id = None
 
     def destroy_environment_host(self, env: EnvironmentRecord) -> None:
+        self.close_environment_browser(env)
         if env.address_edit:
             self.edit_to_env_id.pop(int(ctypes.cast(env.address_edit, ctypes.c_void_p).value or 0), None)
         if env.host_panel:
@@ -989,6 +1083,111 @@ class EnvironmentWorkspaceSketchApp:
         env.browser_view = None
         if self.current_visible_env_id == env.env_id:
             self.current_visible_env_id = None
+
+    def apply_snapshot(self, env: EnvironmentRecord) -> None:
+        snapshot = self.browser_host.get_snapshot(env.env_id)
+        env.cef_created = snapshot.state not in {0, 5}
+        env.cef_visible = snapshot.is_visible
+        env.cef_closing = snapshot.state == 4
+        env.browser_state = snapshot.state
+        env.last_real_url = snapshot.url or env.last_real_url
+        env.last_real_title = snapshot.title or env.last_real_title
+        env.last_loading = snapshot.is_loading
+        env.last_activated_at = snapshot.last_activated_at or env.last_activated_at
+        env.last_error = snapshot.last_error
+        if snapshot.state == 6:
+            env.status = "异常"
+        elif snapshot.state == 3:
+            env.status = "后台中"
+        elif snapshot.state == 2:
+            env.status = "运行中"
+        elif snapshot.state in {0, 5}:
+            env.status = "待启动"
+        self.apply_environment_node_color(env.node_id, env.status)
+
+    def set_environment_error(self, env: EnvironmentRecord, message: str) -> None:
+        env.browser_state = 6
+        env.status = "异常"
+        env.last_error = message
+        env.last_loading = False
+        env.cef_closing = False
+        self.apply_environment_node_color(env.node_id, env.status)
+        self.render_environment(env)
+
+    def ensure_runtime_dirs(self) -> None:
+        for path in (self.cache_root, self.cookie_root, self.log_root):
+            path.mkdir(parents=True, exist_ok=True)
+
+    def enforce_keep_alive_limit(self, exempt_env_id: int | None = None) -> None:
+        hidden = [
+            env
+            for env in self.environments.values()
+            if env.env_id != exempt_env_id
+            and env.keep_alive
+            and env.browser_state == 3
+            and self.browser_host.has_browser(env.env_id)
+        ]
+        hidden.sort(key=lambda item: item.last_activated_at or 0.0)
+        while len(hidden) > self.max_keep_alive:
+            stale = hidden.pop(0)
+            stale.keep_alive = False
+            self.close_environment_browser(stale)
+
+    def on_title_change(self, env_id: int, title: str) -> None:
+        env = self.environments.get(env_id)
+        if env is None:
+            return
+        env.last_real_title = title
+        env.last_title = title
+        self.apply_snapshot(env)
+        if self.current_env_id == env_id:
+            self.render_environment(env)
+
+    def on_url_change(self, env_id: int, url: str) -> None:
+        env = self.environments.get(env_id)
+        if env is None:
+            return
+        env.last_real_url = url
+        env.last_url = url
+        self.apply_snapshot(env)
+        if env.address_edit and env.visible:
+            self.set_edit_text(env.address_edit, self.environment_url_text(env))
+        if self.current_env_id == env_id:
+            self.render_environment(env)
+
+    def on_loading_state(self, env_id: int, is_loading: bool) -> None:
+        env = self.environments.get(env_id)
+        if env is None:
+            return
+        env.last_loading = is_loading
+        self.apply_snapshot(env)
+        if self.current_env_id == env_id:
+            self.render_environment(env)
+
+    def on_browser_closed(self, env_id: int) -> None:
+        env = self.environments.get(env_id)
+        if env is None:
+            return
+        env.browser_state = 5
+        env.status = "待启动"
+        env.cef_created = False
+        env.cef_visible = False
+        env.cef_closing = False
+        env.visible = False
+        env.last_loading = False
+        env.keep_alive = False
+        env.last_error = ""
+        self.apply_environment_node_color(env.node_id, env.status)
+        if self.current_env_id == env_id:
+            self.render_environment(env)
+
+    def on_browser_error(self, env_id: int, message: str) -> None:
+        env = self.environments.get(env_id)
+        if env is None:
+            return
+        env.last_error = message
+        if self.current_env_id == env_id:
+            self.render_environment(env)
 
     def layout_environment_host(self, env: EnvironmentRecord) -> None:
         canvas_w = self.browser_canvas_width
@@ -1002,7 +1201,10 @@ class EnvironmentWorkspaceSketchApp:
         if env.address_edit:
             self.dll.SetEditBoxBounds(env.address_edit, 14, 8, max(180, canvas_w - 60), 28)
         if env.browser_view:
-            self.move(env.browser_view, 16, 68, max(220, canvas_w - 32), max(120, canvas_h - 84))
+            view_w = max(220, canvas_w - 32)
+            view_h = max(120, canvas_h - 84)
+            self.move(env.browser_view, 16, 68, view_w, view_h)
+            self.browser_host.resize(env.env_id, 0, 0, view_w, view_h)
 
     def browser_state_text(self, env: EnvironmentRecord) -> str:
         states = {
@@ -1017,7 +1219,7 @@ class EnvironmentWorkspaceSketchApp:
         return states.get(env.browser_state, "未知")
 
     def environment_url_text(self, env: EnvironmentRecord) -> str:
-        return env.last_url or env.start_url
+        return env.last_real_url or env.last_url or env.start_url
 
     def normalize_url(self, url: str) -> str:
         value = url.strip()
@@ -1033,11 +1235,23 @@ class EnvironmentWorkspaceSketchApp:
             return
         self.ensure_environment_host(env)
         env.last_url = normalized
-        env.last_title = normalized
-        if env.browser_state in {0, 5, 6}:
-            env.browser_state = 2
-            env.status = "运行中"
-            self.apply_environment_node_color(env.node_id, env.status)
+        try:
+            if not self.browser_host.has_browser(env.env_id):
+                self.browser_host.ensure_browser(
+                    env.env_id,
+                    self.hwnd_value(env.browser_view),
+                    normalized,
+                    env.cache_path,
+                    env.cookie_path,
+                    env.browser_flag,
+                    proxy_config=env.proxy_config,
+                )
+            else:
+                self.browser_host.navigate(env.env_id, normalized)
+            self.apply_snapshot(env)
+        except Exception as exc:
+            self.set_environment_error(env, str(exc))
+            return
         if env.address_edit:
             self.set_edit_text(env.address_edit, normalized)
         if self.current_env_id == env.env_id:
@@ -1160,20 +1374,48 @@ class EnvironmentWorkspaceSketchApp:
         self._set_title_keep = keep
         self.dll.set_window_title(self.window, ptr, ln)
 
+    def hwnd_value(self, hwnd: HWND | None) -> int:
+        return int(ctypes.cast(hwnd, ctypes.c_void_p).value or 0)
+
+    def address_edit_has_focus(self, env: EnvironmentRecord) -> bool:
+        if not env.address_edit:
+            return False
+        return self.hwnd_value(USER32.GetFocus()) == self.hwnd_value(env.address_edit)
+
     def move(self, hwnd: HWND, x: int, y: int, width: int, height: int) -> None:
-        USER32.MoveWindow(int(ctypes.cast(hwnd, ctypes.c_void_p).value or 0), x, y, width, height, True)
+        self.dll.SetWindowBounds(hwnd, x, y, width, height)
 
     def show_button(self, button_id: int, visible: bool) -> None:
         self.dll.ShowButton(button_id, 1 if visible else 0)
 
     def show_panel(self, hwnd: HWND, visible: bool) -> None:
-        USER32.ShowWindow(int(ctypes.cast(hwnd, ctypes.c_void_p).value or 0), SW_SHOW if visible else SW_HIDE)
+        USER32.ShowWindow(self.hwnd_value(hwnd), SW_SHOW if visible else SW_HIDE)
+
+
+def validate_runtime() -> None:
+    if sys.platform != "win32":
+        raise RuntimeError(format_runtime_error_message())
+    if struct.calcsize("P") * 8 != 64:
+        raise RuntimeError(format_runtime_error_message())
+    if sys.version_info[:2] != (3, 9):
+        raise RuntimeError(format_runtime_error_message())
+
+
+def show_fatal_error(message: str) -> None:
+    USER32.MessageBoxW(0, message, "Python CEF 原型启动失败", MB_ICONERROR)
 
 
 def main() -> None:
+    validate_runtime()
     EnvironmentWorkspaceSketchApp().run()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        detail = f"{exc}"
+        print(detail, file=sys.stderr)
+        show_fatal_error(detail)
+        raise
 

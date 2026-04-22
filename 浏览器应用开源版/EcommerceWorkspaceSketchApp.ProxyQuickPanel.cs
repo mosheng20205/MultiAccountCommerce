@@ -403,17 +403,9 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 return;
             }
 
-            ProxyTestResult result = TestProxyConfiguration(config);
-            if (_proxyConfigs.TryGetValue(config.Name, out ProxyConfig stored))
-            {
-                stored.LastCheckAtTicks = DateTime.UtcNow.Ticks;
-                stored.LastLatencyMs = result.LatencyMs;
-                stored.LastCheckStatus = result.Status;
-                stored.LastCheckMessage = result.Message;
-                SaveProxyConfiguration();
-            }
-
-            SetLabelText(_lblInfoSub, $"{config.Name}   测试结果：{result.Status}   {result.Message}");
+            ProxyCheckResponse result = ExecuteProxyCheck(config, ResolveProxyCheckTargetUrl());
+            PersistProxyCheckResult(config.Name, result);
+            SetLabelText(_lblInfoSub, $"{config.Name}   测试结果：{result.Status}   {result.SummaryMessage}");
             RefreshQuickProxyPanelForCurrentEnvironment();
         }
 

@@ -9,12 +9,12 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private void InitializeGroupManagementUi()
         {
             _groupManagementPanel = EmojiWindowNative.CreatePanel(_browserCanvas, 0, 0, 100, 100, Argb(255, 249, 251, 253));
-            _lblGroupListTitle = Label(_groupManagementPanel, "分组列表", 14, true);
-            _lblGroupEditorTitle = Label(_groupManagementPanel, "分组设置", 14, true);
-            _lblGroupNameCaption = Label(_groupManagementPanel, "分组名称", 12, true);
-            _lblGroupUrlCaption = Label(_groupManagementPanel, "默认打开网址", 12, true);
+            _lblGroupListTitle = Label(_groupManagementPanel, "分组列表", 18, true);
+            _lblGroupEditorTitle = Label(_groupManagementPanel, "分组设置", 18, true);
+            _lblGroupNameCaption = Label(_groupManagementPanel, "分组名称", 15, true);
+            _lblGroupUrlCaption = Label(_groupManagementPanel, "默认打开网址", 15, true);
             _lblGroupStats = Label(_groupManagementPanel, string.Empty, 12, false);
-            _lblGroupHint = Label(_groupManagementPanel, "新建环境时会继承当前分组的默认打开网址。", 12, false);
+            _lblGroupHint = Label(_groupManagementPanel, "新建环境时会继承当前分组的默认打开网址。", 15, false);
             _editGroupName = EditBox(_groupManagementPanel, string.Empty, false);
             _editGroupUrl = EditBox(_groupManagementPanel, string.Empty, false);
             _groupListBox = EmojiWindowNative.CreateListBox(_groupManagementPanel, 0, 0, 100, 100, 0, Argb(255, 31, 41, 55), Argb(255, 255, 255, 255));

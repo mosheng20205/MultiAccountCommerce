@@ -136,17 +136,17 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         {
             _proxyManagementPanel = EmojiWindowNative.CreatePanel(_browserCanvas, 0, 0, 100, 100, Argb(255, 249, 251, 253));
             _lblProxyListTitle = Label(_proxyManagementPanel, "代理列表", 14, true);
-            _lblProxyListStats = Label(_proxyManagementPanel, string.Empty, 11, false);
-            _lblProxySearchCaption = Label(_proxyManagementPanel, "搜索代理", 11, true);
-            _lblProxyQuickImportCaption = Label(_proxyManagementPanel, "快速导入", 11, true);
-            _lblProxyEditorTitle = Label(_proxyManagementPanel, "代理设置", 14, true);
-            _lblProxyNameCaption = Label(_proxyManagementPanel, "代理名称", 12, true);
-            _lblProxyTypeCaption = Label(_proxyManagementPanel, "代理类型", 12, true);
-            _lblProxyHostCaption = Label(_proxyManagementPanel, "主机地址", 12, true);
-            _lblProxyPortCaption = Label(_proxyManagementPanel, "端口", 12, true);
-            _lblProxyUserCaption = Label(_proxyManagementPanel, "用户名", 12, true);
-            _lblProxyPasswordCaption = Label(_proxyManagementPanel, "密码", 12, true);
-            _lblProxyHint = Label(_proxyManagementPanel, "开源版支持 HTTP、HTTP 账号密码代理，以及无认证 SOCKS5。", 12, false);
+            _lblProxyListStats = Label(_proxyManagementPanel, string.Empty, 15, false);
+            _lblProxySearchCaption = Label(_proxyManagementPanel, "搜索代理", 18, true);
+            _lblProxyQuickImportCaption = Label(_proxyManagementPanel, "快速导入", 15, true);
+            _lblProxyEditorTitle = Label(_proxyManagementPanel, "代理设置", 18, true);
+            _lblProxyNameCaption = Label(_proxyManagementPanel, "代理名称", 15, true);
+            _lblProxyTypeCaption = Label(_proxyManagementPanel, "代理类型", 15, true);
+            _lblProxyHostCaption = Label(_proxyManagementPanel, "主机地址", 15, true);
+            _lblProxyPortCaption = Label(_proxyManagementPanel, "端口", 15, true);
+            _lblProxyUserCaption = Label(_proxyManagementPanel, "用户名", 15, true);
+            _lblProxyPasswordCaption = Label(_proxyManagementPanel, "密码", 15, true);
+            _lblProxyHint = Label(_proxyManagementPanel, "开源版支持 HTTP、HTTP 账号密码代理，以及无认证 SOCKS5。", 15, false);
 
             _editProxySearch = EditBox(_proxyManagementPanel, string.Empty, false);
             _editProxyQuickImport = EditBox(_proxyManagementPanel, string.Empty, false);
@@ -1064,6 +1064,87 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         }
 
         private void TestProxyFromEditor()
+        {
+            if (!TryBuildProxyFromEditor(out ProxyConfig config, out string error))
+            {
+                SetLabelText(_lblInfoSub, error);
+                return;
+            }
+
+            EmojiWindowNative.SetButtonLoading(_btnProxyTest, 1);
+            try
+            {
+                ProxyCheckResponse result = ExecuteProxyCheck(config, ResolveProxyCheckTargetUrl());
+                PersistProxyCheckResult(config.Name, result);
+                SetLabelText(_lblInfoSub, $"{config.Name}   测试结果：{result.Status}   {result.SummaryMessage}");
+            }
+            finally
+            {
+                EmojiWindowNative.SetButtonLoading(_btnProxyTest, 0);
+            }
+        }
+
+        private ProxyCheckResponse ExecuteProxyCheck(ProxyConfig config, string targetUrl)
+        {
+            ProxyCheckRequest request = new ProxyCheckRequest
+            {
+                Name = config?.Name ?? string.Empty,
+                Type = config?.Type ?? "HTTP",
+                Host = config?.Host ?? string.Empty,
+                Port = config?.Port ?? 0,
+                User = config?.User ?? string.Empty,
+                Password = config?.Password ?? string.Empty,
+                TargetUrl = targetUrl ?? string.Empty,
+                Rounds = 3,
+                TimeoutMs = ProxyConnectTimeoutMs
+            };
+            return ProxyCheck.RunProxyCheck(request);
+        }
+
+        private void PersistProxyCheckResult(string proxyName, ProxyCheckResponse result)
+        {
+            if (string.IsNullOrWhiteSpace(proxyName) || result == null)
+            {
+                return;
+            }
+
+            if (_proxyConfigs.TryGetValue(proxyName, out ProxyConfig stored))
+            {
+                stored.LastCheckAtTicks = DateTime.UtcNow.Ticks;
+                stored.LastLatencyMs = result.LatencyMs;
+                stored.LastCheckStatus = result.Status;
+                stored.LastCheckMessage = result.SummaryMessage;
+                SaveProxyConfiguration();
+                RefreshProxyListItems();
+                RefreshQuickProxyPanelForCurrentEnvironment();
+            }
+        }
+
+        private string ResolveProxyCheckTargetUrl()
+        {
+            if (_currentNodeId.HasValue
+                && _nodeMeta.TryGetValue(_currentNodeId.Value, out NodeMeta meta)
+                && meta.Kind == "environment")
+            {
+                EnvironmentRecord env = CurrentEnvironment();
+                if (env != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(env.StartUrl))
+                    {
+                        return env.StartUrl;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(env.Domain))
+                    {
+                        return DefaultStartUrl(env.Domain);
+                    }
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private void LegacyTestProxyFromEditor()
         {
             if (!TryBuildProxyFromEditor(out ProxyConfig config, out string error))
             {
