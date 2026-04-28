@@ -244,6 +244,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             RebuildGroupNavigationTree();
             ActivateGroupManagementModule();
             SetLabelText(_lblInfoSub, $"分组 {newName} 已保存，默认网址已更新为 {newUrl}。");
+            ShowMessageBox("保存修改", $"分组“{newName}”已保存。\n默认打开网址已更新为：{newUrl}");
         }
 
         private void AddManagedGroup()
@@ -299,6 +300,32 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             }
 
             string deletingName = _selectedManagedGroupName;
+            ShowConfirmBox("删除分组", $"确定要删除分组“{deletingName}”吗？", () => DeleteManagedGroupConfirmed(deletingName));
+        }
+
+        private void DeleteManagedGroupConfirmed(string deletingName)
+        {
+            if (string.IsNullOrWhiteSpace(deletingName) || !_groupEnvironmentIds.TryGetValue(deletingName, out List<int> envIds))
+            {
+                SetLabelText(_lblInfoSub, "目标分组不存在，无法删除。");
+                ShowMessageBox("删除分组", "目标分组不存在，无法删除。");
+                return;
+            }
+
+            if (envIds.Count > 0)
+            {
+                SetLabelText(_lblInfoSub, $"分组 {deletingName} 下还有 {envIds.Count} 个环境，请先清空环境再删除。");
+                ShowMessageBox("删除分组", $"分组“{deletingName}”下还有 {envIds.Count} 个环境，无法删除。");
+                return;
+            }
+
+            if (_groupOrder.Count <= 1)
+            {
+                SetLabelText(_lblInfoSub, "至少保留一个分组，不能删除最后一个分组。");
+                ShowMessageBox("删除分组", "至少保留一个分组，不能删除最后一个分组。");
+                return;
+            }
+
             _groupOrder.Remove(deletingName);
             _groupEnvironmentIds.Remove(deletingName);
             _groupDefaultUrls.Remove(deletingName);
@@ -308,6 +335,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             RebuildGroupNavigationTree();
             ActivateGroupManagementModule();
             SetLabelText(_lblInfoSub, $"已删除分组 {deletingName}。");
+            ShowMessageBox("删除分组", $"分组“{deletingName}”已删除。");
         }
 
         private void RebuildGroupNavigationTree()

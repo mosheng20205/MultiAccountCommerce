@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <!-- FBro runtime hangs during startup when the output directory path is too long or non-ASCII. -->
+    <BaseOutputPath>$(SystemDrive)\macc\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(SystemDrive)\macc\obj\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+  </PropertyGroup>
+</Project>

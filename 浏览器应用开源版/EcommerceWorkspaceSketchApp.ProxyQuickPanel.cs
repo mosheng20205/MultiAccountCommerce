@@ -281,8 +281,15 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             if (_proxyMenuSelectionMap.TryGetValue(itemId, out string proxyName))
             {
                 _quickProxySelectionName = proxyName;
-                SetLabelText(_lblInfoSub, $"{FormatEnvironmentProxySummary(env)}   已选择：{DescribeProxyPickerItem(proxyName)}");
-                RefreshQuickProxyPanelForCurrentEnvironment();
+
+                if (IsQuickProxySelectionAlreadyEffective(env, proxyName))
+                {
+                    SetLabelText(_lblInfoSub, $"{FormatEnvironmentProxySummary(env)}   当前环境已在使用该代理");
+                    RefreshQuickProxyPanelForCurrentEnvironment();
+                    return;
+                }
+
+                ApplyQuickProxyNow();
                 return;
             }
 
@@ -308,6 +315,24 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                     SetLabelText(_lblInfoSub, $"{FormatEnvironmentProxySummary(env)}   已关闭代理菜单");
                     break;
             }
+        }
+
+        private bool IsQuickProxySelectionAlreadyEffective(EnvironmentRecord env, string proxyName)
+        {
+            if (env == null)
+            {
+                return false;
+            }
+
+            string currentProxyName = string.IsNullOrWhiteSpace(env.Proxy) ? DirectProxyOption : env.Proxy;
+            string selectedProxyName = string.IsNullOrWhiteSpace(proxyName) ? DirectProxyOption : proxyName;
+            if (!string.Equals(currentProxyName, selectedProxyName, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return string.Equals(env.ProxyStatus, "已应用", StringComparison.Ordinal)
+                || string.Equals(env.ProxyStatus, "直连", StringComparison.Ordinal);
         }
 
         private void OnQuickRecentProxySelected(IntPtr hListBox, int index)
