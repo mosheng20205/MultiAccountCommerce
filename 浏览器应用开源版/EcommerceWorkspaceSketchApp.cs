@@ -239,7 +239,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
         private readonly Dictionary<int, int> _nodeToEnvId = new Dictionary<int, int>();
         private readonly Dictionary<IntPtr, int> _editToEnvId = new Dictionary<IntPtr, int>();
         private readonly List<int> _toolbarButtons = new List<int>();
-        private readonly int[] _toolbarWidths = { 92, 72, 72, 86, 96, 156, 88 };
+        private readonly int[] _toolbarWidths = { 92, 72, 72, 86, 96, 156, 88, 98 };
         private readonly uint[] _toolbarColors =
         {
             Argb(255, 34, 197, 94),
@@ -249,6 +249,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             Argb(255, 124, 58, 237),
             Argb(255, 8, 145, 178),
             Argb(255, 100, 116, 139),
+            Argb(255, 239, 68, 68),
         };
 
         private readonly Dictionary<string, (string Name, string Domain, string Proxy, string Status, int Score)[]> _groupSeed =
@@ -531,7 +532,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             _btnDeleteEnv = Button(_leftPanel, "删除环境", Argb(255, 239, 68, 68), OnDeleteEnvironment);
             _btnTheme = Button(_leftPanel, "🌓", Argb(255, 245, 158, 11), ToggleTheme);
 
-            string[] toolbarTexts = { "启动浏览器", "停止", "刷新", "打开后台", "同步Cookie", "代理设置", "更多操作" };
+            string[] toolbarTexts = { "启动浏览器", "停止", "刷新", "打开后台", "同步Cookie", "代理设置", "更多操作", "关闭浏览器" };
             Action[] toolbarActions =
             {
                 OnStartBrowser,
@@ -541,6 +542,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
                 OnSyncCookie,
                 OnSwitchProxy,
                 ActionPlaceholder,
+                OnCloseBrowser,
             };
 
             for (int i = 0; i < toolbarTexts.Length; i++)
@@ -1188,6 +1190,44 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             ToggleQuickProxyPanel();
         }
 
+        private void OnCloseBrowser()
+        {
+            EnvironmentRecord env = CurrentEnvironment();
+            if (env == null)
+            {
+                SetLabelText(_lblInfoSub, "当前不是环境页面，无法关闭浏览器。");
+                ShowMessageBox("关闭浏览器", "当前不是环境页面，无法关闭浏览器。");
+                return;
+            }
+
+            int envId = env.EnvId;
+            string envName = env.Name;
+            ShowConfirmBox("关闭浏览器", $"确定要关闭环境“{envName}”的浏览器吗？", () => CloseEnvironmentBrowserWithDialog(envId));
+        }
+
+        private void CloseEnvironmentBrowserWithDialog(int envId)
+        {
+            if (!_environments.TryGetValue(envId, out EnvironmentRecord env))
+            {
+                ShowMessageBox("关闭浏览器", "目标环境不存在，无法关闭浏览器。");
+                return;
+            }
+
+            IFBroSharpBrowser browser = FBroSharpBrowserListControl.GetBrowserFromFlag(env.BrowserFlag);
+            if (browser == null || !browser.IsValid)
+            {
+                SetLabelText(_lblInfoSub, $"域名：{env.Domain}   代理：{env.Proxy}   状态：浏览器未运行");
+                ShowMessageBox("关闭浏览器", $"环境“{env.Name}”的浏览器未运行。");
+                return;
+            }
+
+            browser.CloseBrowser(true, true);
+            ResetEnvironmentBrowserState(env);
+            RenderEnvironment(env);
+            SetLabelText(_lblInfoSub, $"域名：{env.Domain}   代理：{env.Proxy}   状态：浏览器已关闭");
+            ShowMessageBox("关闭浏览器", $"环境“{env.Name}”的浏览器已关闭。");
+        }
+
         private void ToggleTheme()
         {
             bool dark = EmojiWindowNative.IsDarkMode() == 0;
@@ -1648,6 +1688,7 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             env.LastUrl = normalized;
             env.LastTitle = env.Name;
             env.KeepAlive = false;
+            EnsureCurrentEnvironmentVisible(env);
 
             IFBroSharpBrowser existingBrowser = GetEnvironmentBrowser(env);
             if (existingBrowser != null && existingBrowser.IsValid)
@@ -1705,6 +1746,19 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
             ApplyEnvironmentNodeColor(env.NodeId, env.Status);
             RenderEnvironment(env);
             SetLabelText(_lblInfoSub, $"域名：{env.Domain}   代理：{env.Proxy}   缓存：{env.CachePath}");
+        }
+
+        private void EnsureCurrentEnvironmentVisible(EnvironmentRecord env)
+        {
+            if (_currentEnvId != env.EnvId || _currentVisibleEnvId == env.EnvId)
+            {
+                return;
+            }
+
+            HideVisibleEnvironment();
+            EnsureEnvironmentHost(env);
+            ShowEnvironment(env);
+            _currentVisibleEnvId = env.EnvId;
         }
 
         private void EnsureBrowserDirectories(EnvironmentRecord env)
@@ -1909,15 +1963,20 @@ namespace EmojiWindowEcommerceWorkspaceSketchDemo
 
         private void CloseEnvironmentBrowser(EnvironmentRecord env)
         {
-            if (_currentEnvId == env.EnvId)
-            {
-                SetQuickProxyVisible(false);
-            }
-
             IFBroSharpBrowser browser = GetEnvironmentBrowser(env);
             if (browser != null && browser.IsValid)
             {
                 browser.CloseBrowser(true, true);
+            }
+
+            ResetEnvironmentBrowserState(env);
+        }
+
+        private void ResetEnvironmentBrowserState(EnvironmentRecord env)
+        {
+            if (_currentEnvId == env.EnvId)
+            {
+                SetQuickProxyVisible(false);
             }
 
             env.BrowserState = 5;
